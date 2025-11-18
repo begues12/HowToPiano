@@ -18,6 +18,9 @@ board; sys_platform == 'linux'
 # Opción 1: Pygame (ventana gráfica, requiere HDMI/display)
 pygame
 
+# NumPy para generación de sonido sintético de piano
+numpy
+
 # Opción 2: Music21 (análisis y renderizado de partituras)
 # music21
 

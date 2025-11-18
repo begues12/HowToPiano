@@ -2,7 +2,7 @@
   "sistema": {
     "nombre": "HowToPiano",
     "version": "1.0.0",
-    "descripcion": "Sistema de iluminaci\u00c3\u00b3n LED sincronizado con MIDI"
+    "descripcion": "Sistema de iluminaciÃ³n LED sincronizado con MIDI"
   },
   "hardware": {
     "raspberry_pi": "Zero W / Zero W2",
@@ -49,7 +49,7 @@
     "auto_scan_usb": true
   },
   "comentarios": {
-    "gpio_pin": "GPIO 18 = Pin f\u00c3\u00adsico 12 en Raspberry Pi",
+    "gpio_pin": "GPIO 18 = Pin fÃ­sico 12 en Raspberry Pi",
     "brillo": "Valor de 0.0 a 1.0 (30% recomendado)",
     "colores": "Formato RGB [R, G, B] con valores 0-255"
   },
