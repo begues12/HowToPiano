@@ -1,0 +1,34 @@
+# HowToPiano - Dependencias Python para Raspberry Pi
+# Instalar con: pip install -r requirements.txt
+
+# Librería para leer archivos MIDI
+mido
+
+# Control de LEDs WS2812B/WS2813 (SOLO RASPBERRY PI)
+# En Windows/Mac se ejecuta en modo simulación sin estas librerías
+rpi-ws281x>=5.0.0; sys_platform == 'linux'
+adafruit-circuitpython-neopixel; sys_platform == 'linux'
+board; sys_platform == 'linux'
+
+# ========================================
+# OPCIONAL: Para partituras gráficas
+# ========================================
+# Descomenta las que necesites:
+
+# Opción 1: Pygame (ventana gráfica, requiere HDMI/display)
+pygame
+
+# Opción 2: Music21 (análisis y renderizado de partituras)
+# music21
+
+# Opción 3: PyQt5 (interfaz gráfica completa)
+# PyQt5
+
+# Opción 4: Tkinter (ya incluido en Python, interfaz básica)
+# No requiere instalación adicional
+
+# Opción 5: Matplotlib (gráficos tipo piano roll)
+# matplotlib
+
+# Opción 6: PIL/Pillow (imágenes de partituras)
+# Pillow

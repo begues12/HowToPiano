@@ -1,0 +1,14 @@
+# Dependencias para desarrollo en Windows/Mac
+# Instalar con: pip install -r requirements-dev.txt
+
+# Core (funciona en cualquier plataforma)
+mido
+
+# Opcional: MIDI real-time (si tienes teclado USB conectado)
+# python-rtmidi  # Descomenta si quieres probar con teclado MIDI real
+
+# Opcional: Display gráfico para pruebas
+pygame
+
+# Testing y desarrollo
+pytest
