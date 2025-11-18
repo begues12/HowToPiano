@@ -2,9 +2,11 @@
 """
 Sistema de Partitura Musical con Scroll Automático Suave
 Renderiza notación musical profesional usando fuentes musicales Unicode
+Usa Bravura.otf para símbolos musicales de alta calidad
 """
 import tkinter as tk
 from typing import List, Tuple, Optional
+import os
 
 
 class MusicScore:
@@ -15,21 +17,30 @@ class MusicScore:
         self.notes = []  # Lista de (timestamp_ms, midi_note, duration_ms, velocity)
         self.current_time = 0
         self.target_time = 0  # Para interpolación suave
-        self.pixels_per_ms = 0.15  # Velocidad de scroll más suave
         
-        # Configuración visual (más compacta)
-        self.line_spacing = 9  # Más compacto
+        # Detectar fuente musical disponible
+        self.music_font = self._detect_music_font()
+        
+        # Configuración visual optimizada para claridad
+        self.line_spacing = 12  # Espaciado óptimo para buena visibilidad
         self.playback_line_x = 200  # Línea vertical de "ahora"
-        self.note_head_width = 6  # Cabeza de nota más pequeña
-        self.note_head_height = 4.5  # Más compacta
-        self.stem_length = 28  # Plica más corta
-        self.stem_width = 1.5  # Plica más delgada
+        self.note_head_width = 7  # Cabeza de nota clara pero no muy grande
+        self.note_head_height = 5  # Proporción elegante
+        self.stem_length = 32  # Plica visible pero elegante
+        self.stem_width = 1.8  # Plica clara
         
-        # Colores profesionales elegantes
-        self.color_staff = '#2d3748'  # Gris oscuro elegante
-        self.color_past = '#cbd5e0'
-        self.color_current = '#e53e3e'  # Rojo más elegante
-        self.color_future = '#3182ce'   # Azul más profesional
+        # Ajustar espaciado según la fuente
+        if self.music_font == 'Bravura':
+            # Bravura necesita más espacio por ser símbolos más grandes
+            self.pixels_per_ms = 0.35  # Mucho más espacio entre notas
+        else:
+            self.pixels_per_ms = 0.2  # Espacio normal para fuentes vectoriales
+        
+        # Colores profesionales con buen contraste
+        self.color_staff = '#1a202c'  # Gris muy oscuro para líneas
+        self.color_past = '#a0aec0'  # Gris medio para notas pasadas
+        self.color_current = '#e53e3e'  # Rojo vibrante para nota actual
+        self.color_future = '#2b6cb0'   # Azul oscuro para notas futuras
         
         # Animación suave
         self.animation_speed = 0.2  # Velocidad de interpolación (0-1)
@@ -46,6 +57,27 @@ class MusicScore:
             'eighth': 250,      # Corchea (1/2 beat)
             'sixteenth': 125,   # Semicorchea (1/4 beat)
         }
+    
+    def _detect_music_font(self):
+        """Detecta la mejor fuente disponible para símbolos musicales"""
+        from tkinter import font as tkfont
+        
+        # Obtener lista de fuentes instaladas en el sistema
+        available_fonts = tkfont.families()
+        
+        # Priorizar Bravura (fuente profesional SMuFL)
+        if 'Bravura' in available_fonts:
+            print("🎵 Usando fuente profesional: Bravura")
+            return 'Bravura'
+        
+        # Fallback a Segoe UI Symbol
+        if 'Segoe UI Symbol' in available_fonts:
+            print("⚠️ Usando fuente fallback: Segoe UI Symbol")
+            return 'Segoe UI Symbol'
+        
+        # Último fallback
+        print("⚠️ Usando fuente básica: Arial")
+        return 'Arial'
     
     def load_notes(self, note_events: List[Tuple[int, List[Tuple[int, int]]]], metadata: dict = None):
         """
@@ -91,47 +123,61 @@ class MusicScore:
         y_center = h // 2 - 10
         y_start = y_center - (2 * self.line_spacing)
         
-        # Dibujar pentagrama (5 líneas horizontales más delgadas y elegantes)
+        # Dibujar pentagrama (5 líneas horizontales claras)
         for i in range(5):
             y = y_start + (i * self.line_spacing)
             self.canvas.create_line(
                 0, y, w, y,
                 fill=self.color_staff,
-                width=1.5,  # Más delgadas para aspecto profesional
+                width=1.8,  # Grosor óptimo para visibilidad
                 tags='staff_line'
             )
         
-        # Dibujar clave de Sol más compacta y elegante
+        # Dibujar clave de Sol con Bravura (SMuFL)
+        # Bravura usa códigos SMuFL específicos
+        if self.music_font == 'Bravura':
+            # SMuFL: U+E050 = Clave de Sol (gClef)
+            clef_symbol = '\uE050'
+            clef_size = 55  # Reducido de 70 a 55 para ser más compacta
+            y_offset = 0  # Sin offset adicional
+        else:
+            # Unicode estándar para otras fuentes
+            clef_symbol = '𝄞'
+            clef_size = 58
+            y_offset = 0
+        
         try:
             # Sombra sutil para efecto 3D
             self.canvas.create_text(
-                23, y_center + 1,
-                text='𝄞',
-                font=('Segoe UI Symbol', 52, 'bold'),
+                26, y_center + y_offset + 1.5,
+                text=clef_symbol,
+                font=(self.music_font, clef_size),
                 fill='#e2e8f0',
                 tags='clef_shadow'
             )
-            # Clave principal más compacta
+            # Clave principal clara
             self.canvas.create_text(
-                22, y_center,
-                text='𝄞',
-                font=('Segoe UI Symbol', 52, 'bold'),
+                25, y_center + y_offset,
+                text=clef_symbol,
+                font=(self.music_font, clef_size),
                 fill=self.color_staff,
                 tags='clef'
             )
-        except:
-            # Fallback con Arial
+            print(f"✅ Usando fuente musical: {self.music_font} (símbolo: {repr(clef_symbol)})")
+        except Exception as e:
+            # Fallback
+            print(f"⚠️ Error con {self.music_font}, usando fallback: {e}")
             self.canvas.create_text(
-                23, y_center + 1,
+                26, y_center + 1.5,
                 text='𝄞',
-                font=('Arial', 48),
+                font=('Arial', 54),
                 fill='#e2e8f0',
                 tags='clef_shadow'
             )
             self.canvas.create_text(
-                22, y_center,
+                25, y_center,
                 text='𝄞',
-                font=('Arial', 48),
+                font=('Arial', 54),
                 fill=self.color_staff,
                 tags='clef'
             )
@@ -194,9 +240,9 @@ class MusicScore:
         
         reference_y = canvas_height // 2 + 20  # Un poco abajo del centro
         
-        # Cada semitono = espacio más visible (ajustado para mejor distribución)
-        # Usar factor de 2.8 en lugar de 3.5 para más espacio
-        y_offset = -note_diff * (self.line_spacing / 2.8)
+        # Cada semitono = espacio óptimo (ajustado para claridad)
+        # Usar factor de 2.4 para mejor distribución vertical
+        y_offset = -note_diff * (self.line_spacing / 2.4)
         
         return int(reference_y + y_offset)
     
@@ -249,42 +295,97 @@ class MusicScore:
         self._draw_ledger_lines(x, y, y_start, color)
     
     def _draw_accidental(self, x: float, y: int, midi_note: int, color: str, tag_suffix: int):
-        """Dibuja alteraciones (sostenidos ♯) más pequeñas y elegantes"""
+        """Dibuja alteraciones (sostenidos ♯) claras y visibles"""
         # Determinar si es nota negra (alteración)
         note_in_octave = midi_note % 12
         black_keys = [1, 3, 6, 8, 10]  # C#, D#, F#, G#, A#
         
         if note_in_octave in black_keys:
-            # Es una nota con sostenido - usar símbolo musical Unicode más pequeño
+            # Es una nota con sostenido - usar símbolo correcto según la fuente
+            if self.music_font == 'Bravura':
+                # SMuFL: U+E262 = Sostenido (accidentalSharp)
+                sharp_symbol = '\uE262'
+                accidental_size = 14  # Reducido de 20 a 14
+            else:
+                # Unicode estándar
+                sharp_symbol = '♯'
+                accidental_size = 18
+            
             try:
-                # Símbolo de sostenido musical compacto
+                # Símbolo de sostenido musical
                 self.canvas.create_text(
-                    x - 14, y,
-                    text='♯',
-                    font=('Segoe UI Symbol', 16, 'bold'),
+                    x - 16, y,
+                    text=sharp_symbol,
+                    font=(self.music_font, accidental_size),
                     fill=color,
                     tags=f'accidental_{tag_suffix}'
                 )
             except:
-                # Fallback: usar # más pequeño
+                # Fallback: usar # visible
                 self.canvas.create_text(
-                    x - 14, y,
+                    x - 16, y,
                     text='#',
-                    font=('Segoe UI', 13, 'bold'),
+                    font=('Segoe UI', 15, 'bold'),
                     fill=color,
                     tags=f'accidental_{tag_suffix}'
                 )
     
     def _draw_note_professional(self, x: float, y: int, y_start: int, color: str,
                            tag_suffix: int, figure_type: str, stem_up: bool):
-        """Dibuja nota pequeña y elegante con calidad profesional"""
+        """Dibuja nota con símbolos SMuFL profesionales si está Bravura"""
         
-        # Cabeza de la nota más pequeña y compacta
+        # Si tenemos Bravura, usar símbolos SMuFL perfectos
+        if self.music_font == 'Bravura':
+            self._draw_note_smufl(x, y, color, tag_suffix, figure_type, stem_up)
+        else:
+            # Fallback: usar gráficos vectoriales
+            self._draw_note_vector(x, y, color, tag_suffix, figure_type, stem_up)
+    
+    def _draw_note_smufl(self, x: float, y: int, color: str, tag_suffix: int, 
+                         figure_type: str, stem_up: bool):
+        """Dibuja nota usando símbolos SMuFL de Bravura"""
+        
+        # Símbolos SMuFL para cabezas de nota (tamaños más pequeños y compactos)
+        if figure_type == 'whole':
+            # U+E0A2 = noteheadWhole
+            notehead = '\uE0A2'
+            size = 18  # Reducido de 28 a 18
+        elif figure_type == 'half':
+            # U+E0A3 = noteheadHalf
+            notehead = '\uE0A3'
+            size = 18  # Reducido de 28 a 18
+        else:
+            # U+E0A4 = noteheadBlack (para negra, corchea, semicorchea)
+            notehead = '\uE0A4'
+            size = 18  # Reducido de 28 a 18
+        
+        # Dibujar cabeza de nota
+        self.canvas.create_text(
+            x, y,
+            text=notehead,
+            font=(self.music_font, size),
+            fill=color,
+            tags=f'note_{tag_suffix}'
+        )
+        
+        # Agregar plica para blancas, negras, corcheas, semicorcheas
+        if figure_type != 'whole':
+            self._draw_stem(x, y, stem_up, color, tag_suffix)
+            
+            # Agregar corchetes para corcheas y semicorcheas
+            if figure_type == 'eighth':
+                self._draw_flag_smufl(x, y, stem_up, color, tag_suffix, 1)
+            elif figure_type == 'sixteenth':
+                self._draw_flag_smufl(x, y, stem_up, color, tag_suffix, 2)
+    
+    def _draw_note_vector(self, x: float, y: int, color: str, tag_suffix: int,
+                          figure_type: str, stem_up: bool):
+        """Dibuja nota con gráficos vectoriales (fallback)"""
         head_width = self.note_head_width
         head_height = self.note_head_height
         
         if figure_type == 'whole':
-            # Redonda: óvalo vacío más pequeño
+            # Redonda: óvalo vacío
             self.canvas.create_oval(
                 x - head_width, y - head_height, 
                 x + head_width, y + head_height,
@@ -345,8 +446,33 @@ class MusicScore:
                 tags=f'stem_{tag_suffix}'
             )
     
+    def _draw_flag_smufl(self, x: float, y: int, stem_up: bool, color: str, 
+                         tag_suffix: int, num_flags: int):
+        """Dibuja corchetes usando símbolos SMuFL de Bravura"""
+        stem_length = self.stem_length
+        
+        if stem_up:
+            stem_x = x + self.note_head_width
+            flag_y = y - stem_length
+            # U+E240 = flag8thUp, U+E242 = flag16thUp
+            flag_symbol = '\uE240' if num_flags == 1 else '\uE242'
+        else:
+            stem_x = x - self.note_head_width
+            flag_y = y + stem_length
+            # U+E241 = flag8thDown, U+E243 = flag16thDown
+            flag_symbol = '\uE241' if num_flags == 1 else '\uE243'
+        
+        self.canvas.create_text(
+            stem_x, flag_y,
+            text=flag_symbol,
+            font=(self.music_font, 16),  # Reducido de 24 a 16
+            fill=color,
+            anchor='w' if stem_up else 'w',
+            tags=f'flag_{tag_suffix}'
+        )
+    
     def _draw_flag_professional(self, x: float, y: int, stem_up: bool, color: str, tag_suffix: int, num_flags: int):
-        """Dibuja banderas pequeñas y elegantes para corcheas y semicorcheas"""
+        """Dibuja banderas pequeñas y elegantes para corcheas y semicorcheas (fallback)"""
         stem_length = self.stem_length
         flag_spacing = 4  # Más compactas
         flag_width = 8  # Más pequeñas
@@ -403,30 +529,30 @@ class MusicScore:
                 )
     
     def _draw_ledger_lines(self, x: float, y: int, y_start: int, color: str):
-        """Dibuja líneas adicionales más cortas y delgadas para notas fuera del pentagrama"""
+        """Dibuja líneas adicionales claras para notas fuera del pentagrama"""
         staff_top = y_start
         staff_bottom = y_start + (4 * self.line_spacing)
         
-        # Líneas superiores (notas agudas) - muy cortas y delgadas
+        # Líneas superiores (notas agudas) - claras y visibles
         if y < staff_top:
             line_y = staff_top - self.line_spacing
             while line_y >= y - 2:
                 self.canvas.create_line(
-                    x - 8, line_y, x + 8, line_y,
+                    x - 10, line_y, x + 10, line_y,
                     fill=color,
-                    width=1.2,
+                    width=1.5,
                     tags='ledger'
                 )
                 line_y -= self.line_spacing
         
-        # Líneas inferiores (notas graves) - muy cortas y delgadas
+        # Líneas inferiores (notas graves) - claras y visibles
         elif y > staff_bottom:
             line_y = staff_bottom + self.line_spacing
             while line_y <= y + 2:
                 self.canvas.create_line(
-                    x - 8, line_y, x + 8, line_y,
+                    x - 10, line_y, x + 10, line_y,
                     fill=color,
-                    width=1.2,
+                    width=1.5,
                     tags='ledger'
                 )
                 line_y += self.line_spacing
