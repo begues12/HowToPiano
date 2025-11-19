@@ -1,6 +1,25 @@
 import mido
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 import time
+import numpy as np
+
+# Try to import audio libraries
+FLUIDSYNTH_AVAILABLE = False
+PYGAME_AVAILABLE = False
+
+try:
+    import fluidsynth
+    FLUIDSYNTH_AVAILABLE = True
+    print("FluidSynth module loaded successfully")
+except (ImportError, FileNotFoundError, OSError) as e:
+    print(f"FluidSynth not available ({e})")
+
+try:
+    import pygame.mixer
+    PYGAME_AVAILABLE = True
+    print("Pygame audio available")
+except ImportError:
+    print("Pygame not available")
 
 class MidiEngine(QObject):
     playback_update = pyqtSignal(float) # current time in seconds
@@ -23,6 +42,15 @@ class MidiEngine(QObject):
         self.timer.setInterval(10) # 10ms
         self.timer.timeout.connect(self.tick)
         
+        # Audio synth
+        self.audio_synth = None
+        self.sfid = None
+        self.audio_type = None  # 'fluidsynth', 'pygame', or None
+        if FLUIDSYNTH_AVAILABLE:
+            self._init_audio()
+        elif PYGAME_AVAILABLE:
+            self._init_pygame_audio()
+        
         # Teaching modes
         self.mode = "Master"  # Master, Student, Practice, Corrector
         self.waiting_for = set()  # Notes we're waiting for in Practice mode
@@ -42,6 +70,32 @@ class MidiEngine(QObject):
         # Corrector mode (error tracking)
         self.mistakes = []  # List of {note, time, expected} mistakes
         self.corrector_index = 0
+    
+    def _init_audio(self):
+        """Initialize FluidSynth for audio playback"""
+        try:
+            self.audio_synth = fluidsynth.Synth()
+            self.audio_synth.start(driver="dsound")  # DirectSound on Windows
+            
+            # Try to load a soundfont
+            import os
+            soundfont_paths = [
+                "C:\\soundfonts\\FluidR3_GM.sf2",
+                "C:\\soundfonts\\piano.sf2",
+                os.path.join(os.path.expanduser("~"), "soundfonts", "piano.sf2"),
+            ]
+            
+            for sf_path in soundfont_paths:
+                if os.path.exists(sf_path):
+                    self.sfid = self.audio_synth.sfload(sf_path)
+                    self.audio_synth.program_select(0, self.sfid, 0, 0)  # Piano
+                    print(f"Audio: Loaded soundfont {sf_path}")
+                    return
+            
+            print("Warning: No soundfont found. Download a .sf2 file to C:\\soundfonts\\")
+        except Exception as e:
+            print(f"Audio init failed: {e}")
+            self.audio_synth = None
 
     def load_midi(self, filename):
         try:
@@ -149,9 +203,15 @@ class MidiEngine(QObject):
                     if msg.type == 'note_on' and msg.velocity > 0:
                         self.synth.note_on(msg.note, msg.velocity)
                         self.note_on_signal.emit(msg.note, msg.velocity)
+                        # Play audio
+                        if self.audio_synth:
+                            self.audio_synth.noteon(0, msg.note, msg.velocity)
                     elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
                         self.synth.note_off(msg.note)
                         self.note_off_signal.emit(msg.note)
+                        # Stop audio
+                        if self.audio_synth:
+                            self.audio_synth.noteoff(0, msg.note)
                 
                 self.current_event_index += 1
             else:
@@ -306,6 +366,10 @@ class MidiEngine(QObject):
         self.active_notes.add(note)
         self.synth.note_on(note, velocity)  # User feedback sound
         
+        # Play audio for user input
+        if self.audio_synth:
+            self.audio_synth.noteon(0, note, velocity)
+        
         # PRACTICE MODE: Check if this is the note we're waiting for
         if self.mode == "Practice" and note in self.waiting_for:
             self.waiting_for.discard(note)
@@ -332,6 +396,10 @@ class MidiEngine(QObject):
         if note in self.active_notes:
             self.active_notes.remove(note)
         self.synth.note_off(note)
+        
+        # Stop audio for user input
+        if self.audio_synth:
+            self.audio_synth.noteoff(0, note)
     
     def record_mistake(self, note, expected_note, time_occurred):
         """Record a mistake for Corrector mode"""

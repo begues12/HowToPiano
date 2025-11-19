@@ -48,6 +48,16 @@ class StaffWidget(QWidget):
         self.countdown_timer = QTimer()
         self.countdown_timer.timeout.connect(self._countdown_tick)
         
+        # Finger assignment and colors (matching PianoWidget)
+        self.finger_colors = {
+            1: QColor(255, 100, 100),   # Red - Thumb
+            2: QColor(100, 200, 100),   # Green - Index
+            3: QColor(100, 150, 255),   # Blue - Middle
+            4: QColor(255, 200, 100),   # Yellow - Ring
+            5: QColor(200, 100, 255)    # Purple - Pinky
+        }
+        self.note_fingers = {}  # {note_id: finger_number}
+        
         # Note name to MIDI number mapping
         self.note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         
@@ -150,6 +160,10 @@ class StaffWidget(QWidget):
             if len(self.notes) > 0:
                 print(f"StaffWidget: First note at time {self.notes[0]['time']:.2f}s, pitch {self.notes[0]['pitch']}")
                 print(f"StaffWidget: Sample chord sizes: {[len(c['note_ids']) for c in self.chords[:5]]}")
+            
+            # Assign fingers based on note positions
+            self._assign_fingers_to_notes()
+            
             self.update()
             return True
             
@@ -180,6 +194,67 @@ class StaffWidget(QWidget):
         y = reference_y + (distance * self.staff_spacing / 2)
         
         return y
+    
+    def get_note_range(self):
+        """Get the min and max pitch in loaded notes"""
+        if not self.notes:
+            return None, None
+        pitches = [note['pitch'] for note in self.notes]
+        return min(pitches), max(pitches)
+    
+    def transpose_notes(self, semitones):
+        """Transpose all notes by the given number of semitones"""
+        if not self.notes:
+            return
+        
+        for note in self.notes:
+            note['pitch'] += semitones
+            # Recalculate y position
+            note['y'] = self.pitch_to_y(note['pitch'])
+        
+        print(f"StaffWidget: Transposed all notes by {semitones} semitones")
+    
+    def check_and_adapt_to_keyboard(self, piano_start, piano_end):
+        """Check note range - no longer transposes, just returns info"""
+        min_pitch, max_pitch = self.get_note_range()
+        
+        if min_pitch is None:
+            return 0
+        
+        print(f"Song range: {min_pitch}-{max_pitch}, Piano display will expand to fit")
+        return 0
+    
+    def _assign_fingers_to_notes(self):
+        """Assign fingers to notes based on pitch and hand position"""
+        if not self.notes:
+            return
+        
+        # Simple finger assignment based on relative pitch
+        # For right hand: lower notes = thumb (1), higher = pinky (5)
+        for note in self.notes:
+            pitch = note['pitch']
+            note_id = note['id']
+            
+            # Assign finger based on pitch range
+            # Middle C (60) area uses all fingers
+            if pitch < 55:
+                finger = 1  # Thumb for very low notes
+            elif pitch < 60:
+                finger = 2  # Index
+            elif pitch < 65:
+                finger = 3  # Middle
+            elif pitch < 70:
+                finger = 4  # Ring
+            else:
+                finger = 5  # Pinky for high notes
+            
+            self.note_fingers[note_id] = finger
+        
+        print(f"StaffWidget: Assigned fingers to {len(self.note_fingers)} notes")
+    
+    def get_finger_for_note(self, note_id):
+        """Get the assigned finger for a note"""
+        return self.note_fingers.get(note_id, 3)  # Default to middle finger
     
     def start_countdown(self, callback=None):
         """Start 3-2-1 countdown before practice mode"""
@@ -325,11 +400,16 @@ class StaffWidget(QWidget):
                 note_y = note['y']
                 note_id = note['id']
                 
+                # Get finger assignment for this note
+                finger = self.get_finger_for_note(note_id)
+                finger_color = self.finger_colors.get(finger, QColor(128, 128, 128))
+                
                 # Choose color based on state - check if THIS specific note is active
                 if note_id in self.active_note_ids:
-                    color = QColor(0, 150, 255)  # Blue for playing
+                    color = finger_color  # Use finger color when playing
+                    color = color.lighter(120)  # Brighten for visibility
                 else:
-                    color = QColor(0, 0, 0)  # Black for normal
+                    color = finger_color  # Always use finger color
                 
                 # Draw ledger lines first (if needed)
                 self.draw_ledger_lines(painter, note_x, note_y, 15)

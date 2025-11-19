@@ -11,6 +11,7 @@ class PianoWidget(QWidget):
         super().__init__(parent)
         self.num_keys = num_keys
         self.start_note = 21 # Default for 88 keys (A0)
+        self.physical_keys = num_keys  # Actual physical piano size
         self.active_notes = {} # {note: color}
         self.mouse_pressed_notes = set()  # Track notes pressed by mouse
         self.update_range()
@@ -21,6 +22,17 @@ class PianoWidget(QWidget):
         # Store key rectangles for click detection
         self.white_key_rects = {}  # {note: QRectF}
         self.black_key_rects = {}  # {note: QRectF}
+        
+        # Finger assignment and colors
+        self.finger_assignments = {}  # {note: finger_number (1-5)}
+        self.finger_colors = {
+            1: QColor(255, 100, 100),   # Red - Thumb
+            2: QColor(100, 200, 100),   # Green - Index
+            3: QColor(100, 150, 255),   # Blue - Middle
+            4: QColor(255, 200, 100),   # Yellow - Ring
+            5: QColor(200, 100, 255)    # Purple - Pinky
+        }
+        self.show_note_names = True  # Show note names on keys
 
     def set_num_keys(self, n):
         self.num_keys = n
@@ -47,8 +59,30 @@ class PianoWidget(QWidget):
     def note_off(self, note):
         if note in self.active_notes:
             del self.active_notes[note]
+        self.update()
+    
+    def set_finger_assignment(self, note, finger):
+        """Assign a finger (1-5) to a note"""
+        if 1 <= finger <= 5:
+            self.finger_assignments[note] = finger
             self.update()
-
+    
+    def clear_finger_assignments(self):
+        """Clear all finger assignments"""
+        self.finger_assignments = {}
+        self.update()
+    
+    def get_finger_color(self, finger):
+        """Get color for a specific finger"""
+        return self.finger_colors.get(finger, QColor(128, 128, 128))
+    
+    def get_note_name(self, note):
+        """Get the name of a note (e.g., C4, D#5)"""
+        note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+        octave = (note // 12) - 1
+        name = note_names[note % 12]
+        return f"{name}{octave}"
+    
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -82,6 +116,12 @@ class PianoWidget(QWidget):
                 # Color
                 if note in self.active_notes:
                     brush = QBrush(self.active_notes[note])
+                elif note in self.finger_assignments:
+                    # Use finger color with transparency
+                    finger = self.finger_assignments[note]
+                    color = self.get_finger_color(finger)
+                    color.setAlpha(80)  # Semi-transparent
+                    brush = QBrush(color)
                 else:
                     brush = QBrush(Qt.GlobalColor.white)
                 
@@ -89,9 +129,21 @@ class PianoWidget(QWidget):
                 painter.setPen(QPen(Qt.GlobalColor.black))
                 painter.drawRect(r)
                 
-                # Label C notes
-                if note % 12 == 0:
-                    painter.drawText(r, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, f"C{note//12 - 1}")
+                # Draw note name
+                if self.show_note_names:
+                    painter.setPen(QPen(Qt.GlobalColor.black))
+                    painter.drawText(r, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, 
+                                   self.get_note_name(note))
+                
+                # Draw finger number if assigned
+                if note in self.finger_assignments:
+                    finger = self.finger_assignments[note]
+                    painter.setPen(QPen(self.get_finger_color(finger)))
+                    from PyQt6.QtGui import QFont
+                    font = QFont("Arial", 14, QFont.Weight.Bold)
+                    painter.setFont(font)
+                    painter.drawText(r, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter, 
+                                   str(finger))
 
                 x += key_width
 
@@ -121,12 +173,36 @@ class PianoWidget(QWidget):
                 
                 if note in self.active_notes:
                     brush = QBrush(self.active_notes[note])
+                elif note in self.finger_assignments:
+                    # Use finger color with transparency
+                    finger = self.finger_assignments[note]
+                    color = self.get_finger_color(finger)
+                    color.setAlpha(120)  # Semi-transparent
+                    brush = QBrush(color)
                 else:
                     brush = QBrush(Qt.GlobalColor.black)
                 
                 painter.setBrush(brush)
                 painter.setPen(QPen(Qt.GlobalColor.black))
                 painter.drawRect(r)
+                
+                # Draw note name on black keys
+                if self.show_note_names:
+                    painter.setPen(QPen(Qt.GlobalColor.white))
+                    from PyQt6.QtGui import QFont
+                    font = QFont("Arial", 8)
+                    painter.setFont(font)
+                    painter.drawText(r, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, 
+                                   self.get_note_name(note))
+                
+                # Draw finger number if assigned
+                if note in self.finger_assignments:
+                    finger = self.finger_assignments[note]
+                    painter.setPen(QPen(Qt.GlobalColor.white))
+                    font = QFont("Arial", 12, QFont.Weight.Bold)
+                    painter.setFont(font)
+                    painter.drawText(r, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter, 
+                                   str(finger))
             else:
                 current_white_x += key_width
 

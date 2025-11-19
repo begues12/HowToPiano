@@ -297,6 +297,13 @@ class MainWindow(QMainWindow):
                 self.song_library.add_song(file_name)
                 # Load into staff widget
                 self.score_view.load_midi_notes(file_name)
+                
+                # Check and adapt to piano range
+                self.adapt_song_to_piano()
+                
+                # Sync finger assignments from staff to piano
+                self.sync_finger_assignments()
+                
                 self.song_list.refresh()  # Refresh the library list
                 self.status_label.setText(f"Loaded: {os.path.basename(file_name)}")
                 self.btn_play.setEnabled(True)
@@ -490,6 +497,13 @@ class MainWindow(QMainWindow):
             if os.path.exists(actual_path):
                 if self.midi_engine.load_midi(actual_path):
                     self.score_view.load_midi_notes(actual_path)
+                    
+                    # Check and adapt to piano range
+                    self.adapt_song_to_piano()
+                    
+                    # Sync finger assignments from staff to piano
+                    self.sync_finger_assignments()
+                    
                     self.status_label.setText(f"{song['name']}")
                     self.btn_play.setEnabled(True)
                 else:
@@ -511,6 +525,52 @@ class MainWindow(QMainWindow):
         self.piano_widget.note_off(note)
         self.score_view.note_off(note)
 
+    def adapt_song_to_piano(self):
+        """Adapt piano display to show all song notes"""
+        min_pitch, max_pitch = self.score_view.get_note_range()
+        
+        if min_pitch is None:
+            return
+        
+        # Expand piano to show all notes in the song
+        self.piano_widget.physical_keys = self.settings["keys"]
+        
+        # Calculate visual range needed for song
+        song_range = max_pitch - min_pitch + 1
+        
+        # Expand to show full song range
+        self.piano_widget.start_note = min_pitch
+        self.piano_widget.num_keys = song_range
+        
+        # Visual indicator
+        message = f"Showing {song_range} keys (notes {min_pitch}-{max_pitch})"
+        if song_range > self.piano_widget.physical_keys:
+            message += f" - Physical piano: {self.piano_widget.physical_keys} keys"
+        
+        self.status_label.setText(message)
+        print(f"Piano expanded: {min_pitch} to {max_pitch} ({song_range} keys)")
+    
+    def sync_finger_assignments(self):
+        """Sync finger assignments from staff to piano widget"""
+        self.piano_widget.clear_finger_assignments()
+        
+        # Get unique pitches and their assigned fingers from the staff
+        pitch_to_finger = {}
+        for note in self.score_view.notes:
+            pitch = note['pitch']
+            note_id = note['id']
+            finger = self.score_view.get_finger_for_note(note_id)
+            
+            # Use the first finger assignment we see for each pitch
+            if pitch not in pitch_to_finger:
+                pitch_to_finger[pitch] = finger
+        
+        # Apply to piano widget
+        for pitch, finger in pitch_to_finger.items():
+            self.piano_widget.set_finger_assignment(pitch, finger)
+        
+        print(f"MainWindow: Synced {len(pitch_to_finger)} finger assignments to piano")
+    
     def show_practice_results(self, evaluation):
         """Show practice results dialog with star rating"""
         from src.ui.results_dialog import ResultsDialog
