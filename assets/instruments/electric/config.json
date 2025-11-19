@@ -1,0 +1,28 @@
+{
+  "name": "Electric Piano",
+  "description": "Piano eléctrico estilo Rhodes/Wurlitzer",
+  "type": "synthetic",
+  "waveform": "sine",
+  "harmonics": [1.0, 0.3, 0.6, 0.2, 0.4, 0.1],
+  "envelope": {
+    "attack": 0.015,
+    "decay": 0.3,
+    "sustain": 0.5,
+    "release": 0.4
+  },
+  "filter": {
+    "type": "bandpass",
+    "cutoff": 3000,
+    "resonance": 2.0
+  },
+  "reverb": {
+    "enabled": true,
+    "room_size": 0.35,
+    "damping": 0.6
+  },
+  "chorus": {
+    "enabled": true,
+    "rate": 1.5,
+    "depth": 0.3
+  }
+}

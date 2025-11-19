@@ -7,7 +7,7 @@
 - **Formato**: OpenType (OTF)
 - **Descarga**: https://github.com/steinbergmedia/bravura/releases
 - **Instalación**: 
-  1. Descargar `Bravura.otf`
+  1. Descargar `main_font.ttx`
   2. Click derecho → Instalar
   3. Reiniciar la aplicación
 - **Ventajas**: 
@@ -46,7 +46,7 @@ import tkinter as tk
 from PIL import ImageTk
 
 # Cargar fuente personalizada
-font = ImageFont.truetype("fonts/Bravura.otf", 24)
+font = ImageFont.truetype("assets/main_font.ttx", 24)
 ```
 
 ### Opción 3: Usar librería especializada
@@ -106,7 +106,7 @@ Actualmente HowToPiano usa:
 
 ## Próximos Pasos
 
-1. **Instalar Bravura**: Descarga e instala Bravura.otf
+1. **Instalar main_font**: Descarga e instala main_font.ttx desde assets/
 2. **Modificar código**: Cambiar 'Segoe UI Symbol' por 'Bravura'
 3. **Probar**: Reiniciar la aplicación y ver la mejora
 

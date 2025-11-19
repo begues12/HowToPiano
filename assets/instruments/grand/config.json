@@ -1,0 +1,23 @@
+{
+  "name": "Grand Piano",
+  "description": "Piano de cola con sonido rico y profundo",
+  "type": "synthetic",
+  "waveform": "complex",
+  "harmonics": [1.0, 0.6, 0.4, 0.3, 0.15, 0.08, 0.04],
+  "envelope": {
+    "attack": 0.008,
+    "decay": 0.2,
+    "sustain": 0.75,
+    "release": 0.5
+  },
+  "filter": {
+    "type": "lowpass",
+    "cutoff": 10000,
+    "resonance": 1.5
+  },
+  "reverb": {
+    "enabled": true,
+    "room_size": 0.5,
+    "damping": 0.3
+  }
+}

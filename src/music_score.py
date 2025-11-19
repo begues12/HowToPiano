@@ -2,7 +2,7 @@
 """
 Sistema de Partitura Musical con Scroll Automático Suave
 Renderiza notación musical profesional usando fuentes musicales Unicode
-Usa Bravura.otf para símbolos musicales de alta calidad
+Usa main_font.ttx para símbolos musicales de alta calidad
 """
 import tkinter as tk
 from typing import List, Tuple, Optional
@@ -30,8 +30,8 @@ class MusicScore:
         self.stem_width = 1.8  # Plica clara
         
         # Ajustar espaciado según la fuente
-        if self.music_font == 'Bravura':
-            # Bravura necesita más espacio por ser símbolos más grandes
+        if self.music_font in ['Bravura', 'main_font', 'BravuraText']:
+            # Fuentes musicales necesitan más espacio por ser símbolos más grandes
             self.pixels_per_ms = 0.35  # Mucho más espacio entre notas
         else:
             self.pixels_per_ms = 0.2  # Espacio normal para fuentes vectoriales
@@ -66,18 +66,14 @@ class MusicScore:
         available_fonts = tkfont.families()
         
         # Priorizar Bravura (fuente profesional SMuFL)
-        if 'Bravura' in available_fonts:
-            print("🎵 Usando fuente profesional: Bravura")
-            return 'Bravura'
+        for font_name in ['Bravura', 'main_font', 'BravuraText']:
+            if font_name in available_fonts:
+                print(f"🎵 Usando fuente profesional: {font_name}")
+                return font_name
         
-        # Fallback a Segoe UI Symbol
-        if 'Segoe UI Symbol' in available_fonts:
-            print("⚠️ Usando fuente fallback: Segoe UI Symbol")
-            return 'Segoe UI Symbol'
-        
-        # Último fallback
-        print("⚠️ Usando fuente básica: Arial")
-        return 'Arial'
+        # Si no hay fuente musical, usar gráficos vectoriales
+        print("⚠️ No se encontró fuente musical - usando gráficos vectoriales")
+        return None  # None indica usar vectores
     
     def load_notes(self, note_events: List[Tuple[int, List[Tuple[int, int]]]], metadata: dict = None):
         """
@@ -163,7 +159,7 @@ class MusicScore:
                 fill=self.color_staff,
                 tags='clef'
             )
-            print(f"✅ Usando fuente musical: {self.music_font} (símbolo: {repr(clef_symbol)})")
+
         except Exception as e:
             # Fallback
             print(f"⚠️ Error con {self.music_font}, usando fallback: {e}")
@@ -301,44 +297,41 @@ class MusicScore:
         black_keys = [1, 3, 6, 8, 10]  # C#, D#, F#, G#, A#
         
         if note_in_octave in black_keys:
-            # Es una nota con sostenido - usar símbolo correcto según la fuente
-            if self.music_font == 'Bravura':
+            # Es una nota con sostenido
+            if self.music_font in ['Bravura', 'main_font', 'BravuraText']:
                 # SMuFL: U+E262 = Sostenido (accidentalSharp)
                 sharp_symbol = '\uE262'
-                accidental_size = 14  # Reducido de 20 a 14
-            else:
-                # Unicode estándar
-                sharp_symbol = '♯'
-                accidental_size = 18
+                accidental_size = 14
+                try:
+                    self.canvas.create_text(
+                        x - 16, y,
+                        text=sharp_symbol,
+                        font=(self.music_font, accidental_size),
+                        fill=color,
+                        tags=f'accidental_{tag_suffix}'
+                    )
+                    return
+                except:
+                    pass
             
-            try:
-                # Símbolo de sostenido musical
-                self.canvas.create_text(
-                    x - 16, y,
-                    text=sharp_symbol,
-                    font=(self.music_font, accidental_size),
-                    fill=color,
-                    tags=f'accidental_{tag_suffix}'
-                )
-            except:
-                # Fallback: usar # visible
-                self.canvas.create_text(
-                    x - 16, y,
-                    text='#',
-                    font=('Segoe UI', 15, 'bold'),
-                    fill=color,
-                    tags=f'accidental_{tag_suffix}'
-                )
+            # Fallback: usar # visible
+            self.canvas.create_text(
+                x - 16, y,
+                text='#',
+                font=('Segoe UI', 15, 'bold'),
+                fill=color,
+                tags=f'accidental_{tag_suffix}'
+            )
     
     def _draw_note_professional(self, x: float, y: int, y_start: int, color: str,
                            tag_suffix: int, figure_type: str, stem_up: bool):
-        """Dibuja nota con símbolos SMuFL profesionales si está Bravura"""
+        """Dibuja nota con símbolos SMuFL profesionales si hay fuente musical"""
         
-        # Si tenemos Bravura, usar símbolos SMuFL perfectos
-        if self.music_font == 'Bravura':
+        # Si tenemos fuente musical, usar símbolos SMuFL
+        if self.music_font in ['Bravura', 'main_font', 'BravuraText']:
             self._draw_note_smufl(x, y, color, tag_suffix, figure_type, stem_up)
         else:
-            # Fallback: usar gráficos vectoriales
+            # Fallback: usar gráficos vectoriales (siempre funciona)
             self._draw_note_vector(x, y, color, tag_suffix, figure_type, stem_up)
     
     def _draw_note_smufl(self, x: float, y: int, color: str, tag_suffix: int, 
@@ -527,6 +520,92 @@ class MusicScore:
                     smooth=True,
                     tags=f'flag_{tag_suffix}'
                 )
+    
+    def _draw_clef_graphic(self, x: int, y: int):
+        """Dibuja clave de sol con gráficos vectoriales (fallback robusto)"""
+        # Curva principal de la clave de sol
+        points = [
+            # Espiral inferior
+            x, y + 30,
+            x - 5, y + 25,
+            x - 8, y + 15,
+            x - 5, y + 5,
+            x, y,
+            x + 5, y - 5,
+            x + 8, y - 15,
+            x + 5, y - 25,
+            x, y - 30,
+            x - 5, y - 35,
+            # Bucle superior
+            x - 8, y - 40,
+            x - 5, y - 45,
+            x + 2, y - 48,
+            x + 8, y - 45,
+            x + 10, y - 38,
+            x + 8, y - 30,
+            x + 3, y - 25,
+        ]
+        
+        # Dibujar línea curva suave
+        self.canvas.create_line(
+            points,
+            fill=self.color_staff,
+            width=3,
+            smooth=True,
+            tags='clef'
+        )
+        
+        # Punto inferior característico
+        self.canvas.create_oval(
+            x - 4, y + 12,
+            x + 4, y + 20,
+            fill=self.color_staff,
+            outline=self.color_staff,
+            tags='clef'
+        )
+    
+    def _draw_clef_graphic(self, x: int, y: int):
+        """Dibuja clave de sol con gráficos vectoriales (fallback robusto)"""
+        # Curva principal de la clave de sol
+        points = [
+            # Espiral inferior
+            x, y + 30,
+            x - 5, y + 25,
+            x - 8, y + 15,
+            x - 5, y + 5,
+            x, y,
+            x + 5, y - 5,
+            x + 8, y - 15,
+            x + 5, y - 25,
+            x, y - 30,
+            x - 5, y - 35,
+            # Bucle superior
+            x - 8, y - 40,
+            x - 5, y - 45,
+            x + 2, y - 48,
+            x + 8, y - 45,
+            x + 10, y - 38,
+            x + 8, y - 30,
+            x + 3, y - 25,
+        ]
+        
+        # Dibujar línea curva suave
+        self.canvas.create_line(
+            points,
+            fill=self.color_staff,
+            width=3,
+            smooth=True,
+            tags='clef'
+        )
+        
+        # Punto inferior característico
+        self.canvas.create_oval(
+            x - 4, y + 12,
+            x + 4, y + 20,
+            fill=self.color_staff,
+            outline=self.color_staff,
+            tags='clef'
+        )
     
     def _draw_ledger_lines(self, x: float, y: int, y_start: int, color: str):
         """Dibuja líneas adicionales claras para notas fuera del pentagrama"""

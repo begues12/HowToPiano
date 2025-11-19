@@ -2,15 +2,26 @@
 """
 Sistema de Sonido de Piano Realista
 Genera sonido de piano con armónicos y envelope ADSR profesional
+Soporta samples WAV y síntesis
 """
 import numpy as np
+from pathlib import Path
 
 try:
     import pygame.mixer
+    from pygame import mixer
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
     print("⚠️ pygame no disponible - sonido deshabilitado")
+
+# Importar gestor de perfiles
+try:
+    from src.instrument_profiles import get_profile_manager
+    PROFILES_AVAILABLE = True
+except ImportError:
+    PROFILES_AVAILABLE = False
+    print("⚠️ Gestor de perfiles no disponible")
 
 
 class PianoSound:
@@ -65,6 +76,14 @@ class PianoSound:
         self.volume = volume
         self.sounds = {}
         self.current_profile = profile
+        self.wav_samples = {}  # Cache de samples WAV cargados
+        self.use_samples = False  # Indica si hay samples disponibles
+        
+        # Cargar gestor de perfiles
+        if PROFILES_AVAILABLE:
+            self.profile_manager = get_profile_manager()
+        else:
+            self.profile_manager = None
         
         if self.enabled:
             try:
@@ -72,17 +91,67 @@ class PianoSound:
                 pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
                 # Aumentar el número de canales de mezcla para acordes grandes
                 pygame.mixer.set_num_channels(64)  # Permite hasta 64 notas simultáneas
-                print(f"✅ Sistema de audio inicializado (44.1kHz, 64 canales) - {self.SOUND_PROFILES[profile]['name']}")
+                
+                # Verificar si el perfil tiene samples
+                self._check_samples()
+                
+                profile_name = self.SOUND_PROFILES.get(profile, {}).get('name', profile)
+                print(f"✅ Sistema de audio inicializado (44.1kHz, 64 canales) - {profile_name}")
+                if self.use_samples:
+                    print(f"   🎵 Usando samples WAV del perfil '{profile}'")
+                else:
+                    print(f"   🎹 Usando síntesis de audio")
             except Exception as e:
                 print(f"❌ Error inicializando audio: {e}")
                 self.enabled = False
     
+    def _check_samples(self):
+        """Verifica si el perfil actual tiene samples WAV disponibles"""
+        if not self.profile_manager:
+            self.use_samples = False
+            return
+        
+        # Verificar si el perfil tiene samples
+        if self.profile_manager.has_samples(self.current_profile):
+            self.use_samples = True
+            self.wav_samples.clear()  # Limpiar cache
+            print(f"   ✅ Samples WAV encontrados para '{self.current_profile}'")
+        else:
+            self.use_samples = False
+    
+    def _load_profile_config(self, profile: str):
+        """Carga configuración de perfil desde el gestor"""
+        if not self.profile_manager:
+            return None
+        
+        return self.profile_manager.get_profile_config(profile)
+    
     def set_profile(self, profile: str):
         """Cambia el perfil de sonido"""
-        if profile in self.SOUND_PROFILES:
+        if profile in self.SOUND_PROFILES or (self.profile_manager and self.profile_manager.profile_exists(profile)):
             self.current_profile = profile
             self.sounds.clear()  # Limpiar caché para regenerar con nuevo perfil
-            print(f"🎵 Perfil cambiado a: {self.SOUND_PROFILES[profile]['name']}")
+            self._check_samples()  # Verificar samples
+            
+            profile_name = self.SOUND_PROFILES.get(profile, {}).get('name', profile.title())
+            print(f"🎵 Perfil cambiado a: {profile_name}")
+            
+            if self.use_samples:
+                print(f"   🎵 Usando samples WAV")
+            else:
+                print(f"   🎹 Usando síntesis")
+    
+    def get_available_profiles(self):
+        """Obtiene lista de perfiles disponibles"""
+        profiles = list(self.SOUND_PROFILES.keys())
+        
+        # Añadir perfiles personalizados del gestor
+        if self.profile_manager:
+            for profile_id in self.profile_manager.get_all_profiles():
+                if profile_id not in profiles:
+                    profiles.append(profile_id)
+        
+        return profiles
     
     def play_note(self, note: int, velocity: int = 80):
         """
@@ -96,17 +165,51 @@ class PianoSound:
             return
         
         try:
-            # Generar clave de caché con nota y velocidad cuantizada
-            velocity_level = velocity // 32  # 4 niveles de dinámica
-            cache_key = (note, velocity_level)
-            
-            # Usar caché si ya existe
-            if cache_key not in self.sounds:
-                self.sounds[cache_key] = self._generate_piano_note(note, velocity)
-            
-            self.sounds[cache_key].play()
+            # Si hay samples WAV disponibles, usarlos
+            if self.use_samples:
+                self._play_sample(note, velocity)
+            else:
+                # Usar síntesis
+                # Generar clave de caché con nota y velocidad cuantizada
+                velocity_level = velocity // 32  # 4 niveles de dinámica
+                cache_key = (note, velocity_level)
+                
+                # Usar caché si ya existe
+                if cache_key not in self.sounds:
+                    self.sounds[cache_key] = self._generate_piano_note(note, velocity)
+                
+                self.sounds[cache_key].play()
         except Exception as e:
             print(f"❌ Error reproduciendo nota {note}: {e}")
+    
+    def _play_sample(self, note: int, velocity: int):
+        """Reproduce un sample WAV con ajuste de volumen por velocity"""
+        if not self.profile_manager:
+            return
+        
+        # Cargar sample si no está en cache
+        if note not in self.wav_samples:
+            sample_path = self.profile_manager.get_sample_path(self.current_profile, note)
+            if sample_path and Path(sample_path).exists():
+                try:
+                    self.wav_samples[note] = mixer.Sound(sample_path)
+                except Exception as e:
+                    print(f"⚠️ Error cargando sample {note}: {e}")
+                    # Fallback a síntesis
+                    sound = self._generate_piano_note(note, velocity)
+                    sound.play()
+                    return
+            else:
+                # No hay sample, usar síntesis
+                sound = self._generate_piano_note(note, velocity)
+                sound.play()
+                return
+        
+        # Reproducir sample con volumen basado en velocity
+        sample = self.wav_samples[note]
+        vel_factor = velocity / 127.0
+        sample.set_volume(self.volume * vel_factor)
+        sample.play()
     
     def _generate_piano_note(self, note: int, velocity: int = 80):
         """
