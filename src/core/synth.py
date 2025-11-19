@@ -3,9 +3,10 @@ import sys
 
 try:
     import fluidsynth
-except ImportError:
+except Exception as e:
     fluidsynth = None
-    print("Warning: pyfluidsynth not found. Audio will not work.")
+    print(f"Warning: Audio engine (fluidsynth) could not be loaded: {e}")
+    print("Audio will be disabled.")
 
 class PianoSynth:
     def __init__(self, soundfont_path=None):

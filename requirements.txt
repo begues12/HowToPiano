@@ -1,7 +1,6 @@
 PyQt6
 pyserial
 mido
-python-rtmidi
 music21
 numpy
 verovio

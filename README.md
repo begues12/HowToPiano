@@ -1,4 +1,44 @@
-# 🎹 HowToPiano - Sistema LED + MIDI para Raspberry Pi
+# Piano Teacher
+
+A Python application that acts as a piano teacher, connecting to an Arduino via USB and displaying professional sheet music.
+
+## Features
+- **Professional Score View**: Interactive musical staff with real-time note highlighting using Bravura font.
+- **Arduino Connection**: Connects to your digital piano or Arduino interface via USB.
+- **Teaching Modes**:
+    - **Master (Maestro)**: Displays the score and plays automatically - just watch and learn.
+    - **Student (Estudiante)**: The program plays 4 chords, then you repeat them - call and response training.
+    - **Practice (Práctica)**: Keys light up on the piano, you press them to advance - guided step-by-step.
+    - **Corrector (Errores)**: Reviews your previous mistakes and makes you correct them - focused improvement.
+- **Configurable Audio**: Supports different piano sounds (Classic, Electric, Organ) using SoundFonts.
+
+## Requirements
+- Python 3.8+
+- PyQt6
+- Verovio
+- Music21
+- PyFluidsynth
+- Pyserial
+- Mido
+
+## Setup
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. **SoundFont**: Place a `.sf2` soundfont file in `assets/soundfonts/default.sf2`. You can download free SoundFonts like "FluidR3_GM" online.
+3. **Arduino**: Connect your Arduino. The default port is `COM3`. You can change this in the code or I can add a settings menu.
+   - Protocol: The Arduino should send `ON:note:velocity` and `OFF:note` strings over Serial at 9600 baud.
+
+## Running
+```bash
+python main.py
+```
+
+## Troubleshooting
+- If `verovio` fails to load, ensure the python package is installed correctly.
+- If audio is silent, check if `fluidsynth` is installed and a SoundFont is present.
+
 
 Sistema de iluminación LED sincronizado con archivos MIDI, similar a Keysnake, diseñado para **Raspberry Pi Zero W/W2**.
 
