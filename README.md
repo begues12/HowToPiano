@@ -11,9 +11,12 @@ Lee archivos MIDI desde una memoria USB y controla una tira LED WS2812B para ilu
 ✔ **Lee archivos MIDI desde USB** - Sin módulos extra  
 ✔ **Control de tiras LED WS2812B/WS2813** - Hasta 88 LEDs (piano completo)  
 ✔ **🎓 Modo Aprendizaje Interactivo** - Aprende paso a paso con guía visual  
+✔ **📚 Tutorial Interactivo** - Sistema modular que guía a nuevos usuarios  
 ✔ **📊 Muestra partituras en pantalla** - Terminal curses + display gráfico opcional  
 ✔ **🎼 Display gráfico (opcional)** - Pentagrama, Piano Roll con pygame/tkinter  
 ✔ **🎹 Detección de teclado MIDI** - Verifica que toques correctamente  
+✔ **🎵 Sistema de Perfiles de Instrumentos** - Síntesis + samples WAV personalizables  
+✔ **⚙️ Configuración completa** - Ajusta todo desde la GUI  
 ✔ **Sincronización perfecta** - El timing MIDI es manejado automáticamente  
 ✔ **Múltiples configuraciones** - Piano 88, teclados 61, 49, 25 teclas  
 ✔ **Modo interactivo** - Menú fácil de usar  
@@ -310,13 +313,20 @@ sudo pip3 install rpi_ws281x adafruit-circuitpython-neopixel
 - **[QUICKSTART.md](QUICKSTART.md)** - Guía rápida de inicio
 - **[FEATURES.md](FEATURES.md)** - Características principales
 - **[docs/learning_mode.md](docs/learning_mode.md)** - Modo aprendizaje detallado
-- **[docs/graphical_display.md](docs/graphical_display.md)** - 🆕 Displays gráficos opcionales
+- **[docs/TUTORIAL_SYSTEM.md](docs/TUTORIAL_SYSTEM.md)** - 🆕 Sistema de tutorial interactivo
+- **[docs/graphical_display.md](docs/graphical_display.md)** - Displays gráficos opcionales
+- **[docs/PROFILE_SYSTEM_README.md](docs/PROFILE_SYSTEM_README.md)** - 🆕 Sistema de perfiles de instrumentos
 
 ### Documentación Técnica
 - **[docs/hardware_setup.md](docs/hardware_setup.md)** - Conexiones y configuración
 - **[docs/led_alignment.md](docs/led_alignment.md)** - Alineación física LEDs
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Solución de problemas
+- **[docs/INSTRUMENT_PROFILES.md](docs/INSTRUMENT_PROFILES.md)** - 🆕 API de perfiles de instrumentos
+- **[docs/ARQUITECTURA_MODULAR.md](docs/ARQUITECTURA_MODULAR.md)** - Arquitectura modular de la GUI
 - **[docs/advanced_examples.md](docs/advanced_examples.md)** - Uso avanzado
+
+### Herramientas de Desarrollo
+- **[utils/demo_tutorial.py](utils/demo_tutorial.py)** - Demo independiente del sistema de tutorial
 
 ### Recursos Externos
 - [Documentación oficial WS2812B](https://cdn-shop.adafruit.com/datasheets/WS2812B.pdf)
