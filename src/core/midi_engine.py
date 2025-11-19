@@ -7,6 +7,7 @@ class MidiEngine(QObject):
     note_on_signal = pyqtSignal(int, int) # note, velocity
     note_off_signal = pyqtSignal(int) # note
     waiting_for_notes = pyqtSignal(list) # Signal when waiting for user input (list of notes)
+    practice_finished = pyqtSignal(dict) # Signal when practice finishes with evaluation results
     
     def __init__(self, synth):
         super().__init__()
@@ -36,6 +37,7 @@ class MidiEngine(QObject):
         self.student_current_group = 0
         self.student_is_teacher_turn = True  # True = teacher plays, False = student repeats
         self.student_chords_played = 0
+        self.student_waiting_for_chords = []  # List of chords student needs to play
         
         # Corrector mode (error tracking)
         self.mistakes = []  # List of {note, time, expected} mistakes
@@ -56,6 +58,9 @@ class MidiEngine(QObject):
             # Load expected notes for evaluation
             self.evaluator.load_expected_notes(self.events)
             
+            # Prepare chord groups for Student mode
+            self._prepare_student_mode_chords()
+            
             self.stop()
             return True
         except Exception as e:
@@ -73,6 +78,13 @@ class MidiEngine(QObject):
         # Start recording for practice mode
         if self.mode == "Practice":
             self.evaluator.start_recording()
+        
+        # Reset student mode
+        if self.mode == "Student":
+            self.student_current_group = 0
+            self.student_is_teacher_turn = True
+            self.student_chords_played = 0
+            self.student_waiting_for_chords = []
         
         self.timer.start()
 
@@ -132,13 +144,14 @@ class MidiEngine(QObject):
                         self.waiting_for_notes.emit(list(self.waiting_for))
                         break  # Stop and wait
                 
-                # Normal playback (MASTER mode)
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    self.synth.note_on(msg.note, msg.velocity)
-                    self.note_on_signal.emit(msg.note, msg.velocity)
-                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                    self.synth.note_off(msg.note)
-                    self.note_off_signal.emit(msg.note)
+                # Normal playback (MASTER mode and others)
+                if self.mode != "Practice":  # Practice mode handles notes differently
+                    if msg.type == 'note_on' and msg.velocity > 0:
+                        self.synth.note_on(msg.note, msg.velocity)
+                        self.note_on_signal.emit(msg.note, msg.velocity)
+                    elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                        self.synth.note_off(msg.note)
+                        self.note_off_signal.emit(msg.note)
                 
                 self.current_event_index += 1
             else:
@@ -158,20 +171,127 @@ class MidiEngine(QObject):
         if self.mode == "Practice":
             self.evaluator.stop_recording()
             evaluation = self.evaluator.evaluate()
+            print(f"Practice finished! Stars: {evaluation['overall_stars']}/5")
+            self.practice_finished.emit(evaluation)
+        
+        # If in student mode, evaluate and show results
+        if self.mode == "Practice":
+            self.evaluator.stop_recording()
+            evaluation = self.evaluator.evaluate()
             
             # Emit signal to show results (will be connected to MainWindow)
             from PyQt6.QtCore import pyqtSignal
             if hasattr(self, 'practice_finished'):
                 self.practice_finished.emit(evaluation)
     
+    def _prepare_student_mode_chords(self):
+        """Group events into chords for Student mode"""
+        if not self.events:
+            return
+        
+        # Group note_on events into chords (notes starting at same time)
+        chords = []
+        i = 0
+        tolerance = 0.02  # 20ms tolerance for simultaneous notes
+        
+        while i < len(self.events):
+            evt = self.events[i]
+            if evt['msg'].type == 'note_on' and evt['msg'].velocity > 0:
+                chord_time = evt['time']
+                chord_notes = [{'note': evt['msg'].note, 'velocity': evt['msg'].velocity}]
+                
+                # Find all notes starting at approximately the same time
+                j = i + 1
+                while j < len(self.events):
+                    next_evt = self.events[j]
+                    if (next_evt['msg'].type == 'note_on' and 
+                        next_evt['msg'].velocity > 0 and 
+                        abs(next_evt['time'] - chord_time) < tolerance):
+                        chord_notes.append({'note': next_evt['msg'].note, 'velocity': next_evt['msg'].velocity})
+                        j += 1
+                    else:
+                        break
+                
+                chords.append({
+                    'time': chord_time,
+                    'notes': chord_notes,
+                    'event_indices': list(range(i, j))
+                })
+                i = j
+            else:
+                i += 1
+        
+        # Group chords into sets of 4
+        self.student_chord_groups = []
+        for i in range(0, len(chords), 4):
+            group = chords[i:i+4]
+            self.student_chord_groups.append(group)
+        
+        print(f"Student mode: Created {len(self.student_chord_groups)} groups of chords")
+        if self.student_chord_groups:
+            print(f"First group has {len(self.student_chord_groups[0])} chords")
+    
     def _handle_student_mode(self):
         """Student mode: Teacher plays 4 chords, student repeats"""
-        # TODO: Implement call and response logic
-        # 1. Group notes into chords (notes starting at same time)
-        # 2. Play 4 chords (teacher)
-        # 3. Wait for student to repeat those 4 chords
-        # 4. Move to next group of 4
-        pass
+        if not self.student_chord_groups or self.student_current_group >= len(self.student_chord_groups):
+            # Finished all groups
+            self.song_finished()
+            return
+        
+        current_group = self.student_chord_groups[self.student_current_group]
+        
+        if self.student_is_teacher_turn:
+            # Teacher's turn: play the 4 chords
+            now = time.time() - self.start_time
+            
+            # Play chords with timing
+            for chord_idx, chord in enumerate(current_group):
+                if chord_idx < len(current_group):
+                    # Check if it's time to play this chord
+                    play_time = self.student_current_group * 8.0 + chord_idx * 1.0  # 1 second between chords
+                    
+                    if now >= play_time and now < play_time + 0.1:
+                        # Play all notes in chord
+                        for note_info in chord['notes']:
+                            self.synth.note_on(note_info['note'], note_info['velocity'])
+                            self.note_on_signal.emit(note_info['note'], note_info['velocity'])
+                        
+                        # Schedule note off after 0.8 seconds
+                        if chord_idx == len(current_group) - 1:
+                            # Last chord of teacher's turn, switch to student
+                            pass
+            
+            # Check if teacher finished playing all 4 chords
+            finish_time = self.student_current_group * 8.0 + len(current_group) * 1.0
+            if now >= finish_time:
+                # Switch to student's turn
+                self.student_is_teacher_turn = False
+                self.student_chords_played = 0
+                self.student_waiting_for_chords = [chord['notes'] for chord in current_group]
+                self.waiting_for = set(note['note'] for note in current_group[0]['notes'])
+                self.waiting_for_notes.emit(list(self.waiting_for))
+                print(f"Student's turn! Waiting for {len(self.student_waiting_for_chords)} chords")
+        
+        else:
+            # Student's turn: wait for them to play the chords
+            if not self.waiting_for and self.student_chords_played < len(current_group):
+                # Student finished current chord, move to next
+                self.student_chords_played += 1
+                
+                if self.student_chords_played < len(current_group):
+                    # Set up next chord
+                    next_chord = current_group[self.student_chords_played]
+                    self.waiting_for = set(note['note'] for note in next_chord['notes'])
+                    self.waiting_for_notes.emit(list(self.waiting_for))
+                    print(f"Chord {self.student_chords_played + 1}/{len(current_group)}")
+                else:
+                    # Student finished all 4 chords, move to next group
+                    print("Student completed group! Moving to next...")
+                    self.student_current_group += 1
+                    self.student_is_teacher_turn = True
+                    self.start_time = time.time()  # Reset timer for next group
+        
+        self.playback_update.emit(time.time() - self.start_time)
     
     def _handle_corrector_mode(self):
         """Corrector mode: Review and correct previous mistakes"""
@@ -197,8 +317,10 @@ class MidiEngine(QObject):
         
         # STUDENT MODE: Track if student is playing correct notes
         if self.mode == "Student" and not self.student_is_teacher_turn:
-            # Check if correct note for current chord
-            pass
+            # Check if this note is in the waiting set
+            if note in self.waiting_for:
+                self.waiting_for.discard(note)
+                print(f"Correct note! {len(self.waiting_for)} notes remaining")
         
         # CORRECTOR MODE: Check if correcting mistake properly
         if self.mode == "Corrector":

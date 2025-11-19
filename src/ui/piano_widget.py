@@ -1,16 +1,26 @@
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPen
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QMouseEvent
 
 class PianoWidget(QWidget):
+    # Signals for mouse interaction
+    note_pressed = pyqtSignal(int, int)  # note, velocity
+    note_released = pyqtSignal(int)  # note
+    
     def __init__(self, num_keys=88, parent=None):
         super().__init__(parent)
         self.num_keys = num_keys
         self.start_note = 21 # Default for 88 keys (A0)
         self.active_notes = {} # {note: color}
+        self.mouse_pressed_notes = set()  # Track notes pressed by mouse
         self.update_range()
         self.setMinimumHeight(100)
         self.setMaximumHeight(150)
+        self.setMouseTracking(True)  # Enable mouse tracking for hover effects
+        
+        # Store key rectangles for click detection
+        self.white_key_rects = {}  # {note: QRectF}
+        self.black_key_rects = {}  # {note: QRectF}
 
     def set_num_keys(self, n):
         self.num_keys = n
@@ -61,13 +71,13 @@ class PianoWidget(QWidget):
         
         # Draw White Keys
         x = 0
-        white_key_rects = {} # note -> rect
+        self.white_key_rects = {} # note -> rect
         
         for i in range(self.num_keys):
             note = self.start_note + i
             if not self.is_black(note):
                 r = QRectF(x, 0, key_width, height)
-                white_key_rects[note] = r
+                self.white_key_rects[note] = r
                 
                 # Color
                 if note in self.active_notes:
@@ -90,6 +100,8 @@ class PianoWidget(QWidget):
         black_key_width = key_width * 0.6
         black_key_height = height * 0.6
         
+        self.black_key_rects = {}
+        
         # We need to position them relative to white keys
         # A black key is between two white keys.
         # C# is between C and D.
@@ -105,6 +117,7 @@ class PianoWidget(QWidget):
                 # Center is at current_white_x
                 bx = current_white_x - (black_key_width / 2)
                 r = QRectF(bx, 0, black_key_width, black_key_height)
+                self.black_key_rects[note] = r
                 
                 if note in self.active_notes:
                     brush = QBrush(self.active_notes[note])
@@ -122,3 +135,55 @@ class PianoWidget(QWidget):
         # 0=C, 1=C#, 2=D, 3=D#, 4=E, 5=F, 6=F#, 7=G, 8=G#, 9=A, 10=A#, 11=B
         n = note % 12
         return n in [1, 3, 6, 8, 10]
+    
+    def get_note_at_position(self, pos):
+        """Get the note number at the given position, or None"""
+        # Check black keys first (they're on top)
+        for note, rect in self.black_key_rects.items():
+            if rect.contains(pos):
+                return note
+        
+        # Check white keys
+        for note, rect in self.white_key_rects.items():
+            if rect.contains(pos):
+                return note
+        
+        return None
+    
+    def mousePressEvent(self, event: QMouseEvent):
+        """Handle mouse press on piano keys"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            note = self.get_note_at_position(event.position())
+            if note is not None and note not in self.mouse_pressed_notes:
+                self.mouse_pressed_notes.add(note)
+                velocity = 100  # Default velocity for mouse clicks
+                self.note_pressed.emit(note, velocity)
+                self.note_on(note, QColor("cyan"))  # Visual feedback
+    
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        """Handle mouse release"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Release all notes pressed by mouse
+            for note in list(self.mouse_pressed_notes):
+                self.mouse_pressed_notes.remove(note)
+                self.note_released.emit(note)
+                self.note_off(note)
+    
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Handle mouse drag across keys"""
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            note = self.get_note_at_position(event.position())
+            
+            # Press new note if hovering over one not already pressed
+            if note is not None and note not in self.mouse_pressed_notes:
+                self.mouse_pressed_notes.add(note)
+                velocity = 100
+                self.note_pressed.emit(note, velocity)
+                self.note_on(note, QColor("cyan"))
+            
+            # Release notes we're no longer over
+            for pressed_note in list(self.mouse_pressed_notes):
+                if pressed_note != note:
+                    self.mouse_pressed_notes.remove(pressed_note)
+                    self.note_released.emit(pressed_note)
+                    self.note_off(pressed_note)

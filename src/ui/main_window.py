@@ -102,6 +102,10 @@ class MainWindow(QMainWindow):
         self.arduino.note_on.connect(lambda n, v: self.piano_widget.note_on(n, QColor("green")))
         self.arduino.note_off.connect(lambda n: self.piano_widget.note_off(n))
         
+        # Connect PianoWidget Mouse -> MidiEngine (Interactive Piano)
+        self.piano_widget.note_pressed.connect(self.midi_engine.on_user_note_on)
+        self.piano_widget.note_released.connect(self.midi_engine.on_user_note_off)
+        
         self.arduino_thread.start()
 
         # Control Buttons - SVG Icons
@@ -282,6 +286,7 @@ class MainWindow(QMainWindow):
         self.midi_engine.playback_update.connect(self.update_playback_time)
         self.midi_engine.note_on_signal.connect(self.on_playback_note_on)
         self.midi_engine.note_off_signal.connect(self.on_playback_note_off)
+        self.midi_engine.practice_finished.connect(self.show_practice_results)
 
     def open_midi(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open MIDI File", "", "MIDI Files (*.mid *.midi)")
@@ -317,19 +322,28 @@ class MainWindow(QMainWindow):
             self.midi_engine.play()
             self.btn_play.setEnabled(False)
             self.btn_pause.setEnabled(True)
-            self.status_label.setText("Playing...")
+            mode_name = self.midi_engine.mode
+            self.status_label.setText(f"▶ Playing ({mode_name} Mode)")
+            self.setWindowTitle(f"How To Piano - ▶ Playing ({mode_name} Mode)")
+            
+            # Visual feedback - highlight play button
+            self.btn_pause.setStyleSheet(self.btn_pause.styleSheet().replace("#f39c12", "#e67e22"))
     
     def pause_playback(self):
         self.midi_engine.pause()
         self.btn_play.setEnabled(True)
         self.btn_pause.setEnabled(False)
-        self.status_label.setText("Paused")
+        mode_name = self.midi_engine.mode
+        self.status_label.setText(f"⏸ Paused ({mode_name} Mode)")
+        self.setWindowTitle(f"How To Piano - ⏸ Paused ({mode_name} Mode)")
 
     def stop_playback(self):
         self.midi_engine.stop()
         self.btn_play.setEnabled(True)
         self.btn_pause.setEnabled(False)
-        self.status_label.setText("Stopped")
+        mode_name = self.midi_engine.mode
+        self.status_label.setText(f"⏹ Stopped ({mode_name} Mode)")
+        self.setWindowTitle(f"How To Piano - {mode_name} Mode")
     
     def open_train_dialog(self):
         """Open training mode selection dialog"""
@@ -381,22 +395,39 @@ class MainWindow(QMainWindow):
     def select_mode(self, mode, dialog):
         """Set training mode and close dialog"""
         self.midi_engine.mode = mode
-        self.mode_label.setText(f"{mode} Mode")
+        
+        # Update mode label with icon
+        mode_icons = {
+            "Master": "🎹",
+            "Student": "🎓",
+            "Practice": "📝",
+            "Corrector": "✏️"
+        }
+        icon = mode_icons.get(mode, "🎵")
+        self.mode_label.setText(f"{icon} {mode}")
+        self.mode_label.setStyleSheet("color: #3498db; font-size: 12px; font-weight: bold; background-color: #34495e; padding: 5px 10px; border-radius: 3px;")
+        
         dialog.accept()
         
-        # Start countdown for Practice mode
-        if mode == "Practice":
-            self.score_view.start_countdown(callback=self.start_practice_mode)
+        # Start countdown for all practice modes (Student, Practice, Corrector)
+        if mode in ["Student", "Practice", "Corrector"]:
+            self.score_view.start_countdown(callback=lambda: self.start_training_mode(mode))
         else:
-            # For other modes, just update status
+            # Master mode - just update status
             self.setWindowTitle(f"How To Piano - {mode} Mode")
+            self.status_label.setText(f"Ready - {mode} Mode")
     
     def start_practice_mode(self):
-        """Called after countdown finishes"""
+        """Called after countdown finishes (kept for backward compatibility)"""
+        self.start_training_mode("Practice")
+    
+    def start_training_mode(self, mode):
+        """Called after countdown finishes for any training mode"""
         self.midi_engine.play()
         self.btn_play.setEnabled(False)
         self.btn_pause.setEnabled(True)
-        self.setWindowTitle("How To Piano - Practice Mode Active")
+        self.status_label.setText(f"▶ Active - {mode} Mode")
+        self.setWindowTitle(f"How To Piano - ▶ {mode} Mode Active")
 
     def refresh_midi_inputs(self):
         """Detect and list available MIDI input devices"""
@@ -480,6 +511,22 @@ class MainWindow(QMainWindow):
         self.piano_widget.note_off(note)
         self.score_view.note_off(note)
 
+    def show_practice_results(self, evaluation):
+        """Show practice results dialog with star rating"""
+        from src.ui.results_dialog import ResultsDialog
+        
+        results_dlg = ResultsDialog(evaluation, self)
+        if results_dlg.exec():
+            # User clicked "Try Again"
+            self.midi_engine.stop()
+            self.score_view.set_playback_time(0)
+            self.start_practice_mode()
+        else:
+            # User clicked "Done"
+            self.midi_engine.mode = "Master"
+            self.mode_label.setText("Master Mode")
+            self.setWindowTitle("How To Piano")
+    
     def closeEvent(self, event):
         self.arduino.stop()
         self.arduino_thread.quit()
