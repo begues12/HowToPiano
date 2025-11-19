@@ -89,6 +89,7 @@ class MidiEngine(QObject):
                 if os.path.exists(sf_path):
                     self.sfid = self.audio_synth.sfload(sf_path)
                     self.audio_synth.program_select(0, self.sfid, 0, 0)  # Piano
+                    self.audio_type = 'fluidsynth'
                     print(f"Audio: Loaded soundfont {sf_path}")
                     return
             
@@ -96,6 +97,124 @@ class MidiEngine(QObject):
         except Exception as e:
             print(f"Audio init failed: {e}")
             self.audio_synth = None
+    
+    def _init_pygame_audio(self):
+        """Initialize pygame for high-quality audio synthesis"""
+        try:
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
+            self.audio_type = 'pygame'
+            self.active_sounds = {}  # {note: Sound object}
+            print("Audio: Using pygame synthesizer (44.1kHz)")
+        except Exception as e:
+            print(f"Pygame audio init failed: {e}")
+            self.audio_type = None
+    
+    def _generate_piano_tone(self, note, duration=2.0):
+        """Generate a realistic piano-like tone using pygame"""
+        if not PYGAME_AVAILABLE:
+            return None
+        
+        frequency = 440 * (2 ** ((note - 69) / 12))  # A4 = 69 = 440Hz
+        sample_rate = 44100  # Higher quality
+        samples = int(sample_rate * duration)
+        
+        # Generate wave with rich harmonics for realistic piano sound
+        t = np.linspace(0, duration, samples, False)
+        
+        # Fundamental frequency
+        wave = np.sin(2 * np.pi * frequency * t)
+        
+        # Add harmonics with decreasing amplitude (realistic piano spectrum)
+        wave += 0.6 * np.sin(2 * 2 * np.pi * frequency * t)   # 2nd harmonic
+        wave += 0.4 * np.sin(3 * 2 * np.pi * frequency * t)   # 3rd harmonic
+        wave += 0.25 * np.sin(4 * 2 * np.pi * frequency * t)  # 4th harmonic
+        wave += 0.15 * np.sin(5 * 2 * np.pi * frequency * t)  # 5th harmonic
+        wave += 0.1 * np.sin(6 * 2 * np.pi * frequency * t)   # 6th harmonic
+        wave += 0.08 * np.sin(7 * 2 * np.pi * frequency * t)  # 7th harmonic
+        wave += 0.05 * np.sin(8 * 2 * np.pi * frequency * t)  # 8th harmonic
+        
+        # Inharmonicity (piano strings are not perfectly harmonic)
+        inharmonicity = 0.0001 * (note - 40) ** 2
+        wave += 0.03 * np.sin(2 * np.pi * frequency * (1 + inharmonicity) * t)
+        
+        # Apply realistic ADSR envelope
+        envelope = np.ones_like(t)
+        attack_time = 0.002  # Very fast attack (2ms)
+        decay_time = 0.3     # Decay (300ms)
+        sustain_level = 0.6  # Sustain level
+        release_time = 0.8   # Release (800ms)
+        
+        attack_samples = int(attack_time * sample_rate)
+        decay_samples = int(decay_time * sample_rate)
+        release_samples = int(release_time * sample_rate)
+        
+        # Attack phase
+        if attack_samples > 0:
+            envelope[:attack_samples] = np.linspace(0, 1, attack_samples)
+        
+        # Decay phase
+        decay_end = attack_samples + decay_samples
+        if decay_end < len(envelope):
+            envelope[attack_samples:decay_end] = np.linspace(1, sustain_level, decay_samples)
+            # Sustain phase
+            envelope[decay_end:-release_samples] = sustain_level
+        
+        # Release phase (exponential decay for natural sound)
+        if release_samples > 0:
+            envelope[-release_samples:] = sustain_level * np.exp(-5 * np.linspace(0, 1, release_samples))
+        
+        # Apply envelope and normalize
+        wave = wave * envelope
+        
+        # Add slight random noise for realism (sympathetic resonance)
+        noise = np.random.normal(0, 0.005, len(wave))
+        wave = wave + noise
+        
+        # Dynamic range compression for consistent volume
+        wave = np.tanh(wave * 1.5) * 0.4
+        
+        # Convert to 16-bit integer
+        wave = (wave * 32767).astype(np.int16)
+        
+        # Stereo with slight panning based on pitch
+        pan = (note - 60) / 88  # Center around middle C
+        left_gain = 1.0 - (pan * 0.3 if pan > 0 else 0)
+        right_gain = 1.0 + (pan * 0.3 if pan < 0 else 0)
+        
+        left_channel = (wave * left_gain).astype(np.int16)
+        right_channel = (wave * right_gain).astype(np.int16)
+        stereo_wave = np.column_stack((left_channel, right_channel))
+        
+        return pygame.sndarray.make_sound(stereo_wave)
+    
+    def _play_note_pygame(self, note, velocity):
+        """Play note using pygame"""
+        if self.audio_type != 'pygame':
+            return
+        
+        try:
+            if note not in self.active_sounds:
+                sound = self._generate_piano_tone(note)
+                if sound:
+                    self.active_sounds[note] = sound
+            
+            if note in self.active_sounds:
+                volume = velocity / 127.0
+                self.active_sounds[note].set_volume(volume)
+                self.active_sounds[note].play()
+        except Exception as e:
+            print(f"Error playing note {note}: {e}")
+    
+    def _stop_note_pygame(self, note):
+        """Stop note using pygame"""
+        if self.audio_type != 'pygame':
+            return
+        
+        try:
+            if note in self.active_sounds:
+                self.active_sounds[note].stop()
+        except Exception as e:
+            print(f"Error stopping note {note}: {e}")
 
     def load_midi(self, filename):
         try:
@@ -182,6 +301,9 @@ class MidiEngine(QObject):
         # MASTER MODE or normal playback
         now = time.time() - self.start_time
         
+        # Update visual position FIRST (before playing notes)
+        self.playback_update.emit(now)
+        
         while self.current_event_index < len(self.events):
             evt = self.events[self.current_event_index]
             if evt['time'] <= now:
@@ -204,14 +326,18 @@ class MidiEngine(QObject):
                         self.synth.note_on(msg.note, msg.velocity)
                         self.note_on_signal.emit(msg.note, msg.velocity)
                         # Play audio
-                        if self.audio_synth:
+                        if self.audio_type == 'fluidsynth' and self.audio_synth:
                             self.audio_synth.noteon(0, msg.note, msg.velocity)
+                        elif self.audio_type == 'pygame':
+                            self._play_note_pygame(msg.note, msg.velocity)
                     elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
                         self.synth.note_off(msg.note)
                         self.note_off_signal.emit(msg.note)
                         # Stop audio
-                        if self.audio_synth:
+                        if self.audio_type == 'fluidsynth' and self.audio_synth:
                             self.audio_synth.noteoff(0, msg.note)
+                        elif self.audio_type == 'pygame':
+                            self._stop_note_pygame(msg.note)
                 
                 self.current_event_index += 1
             else:
@@ -220,8 +346,6 @@ class MidiEngine(QObject):
         # Check if song is finished
         if self.current_event_index >= len(self.events):
             self.song_finished()
-        
-        self.playback_update.emit(now)
     
     def song_finished(self):
         """Called when song playback finishes"""
@@ -300,40 +424,70 @@ class MidiEngine(QObject):
         
         current_group = self.student_chord_groups[self.student_current_group]
         
+        # Update playback position to first chord of current group for score display
+        if current_group and 'time' in current_group[0]:
+            self.playback_update.emit(current_group[0]['time'])
+        
         if self.student_is_teacher_turn:
-            # Teacher's turn: play the 4 chords
-            now = time.time() - self.start_time
+            # Teacher's turn: play the 4 chords (only if not already played)
+            if not hasattr(self, 'teacher_chord_index'):
+                self.teacher_chord_index = 0
+                self.teacher_last_play_time = time.time()
             
-            # Play chords with timing
-            for chord_idx, chord in enumerate(current_group):
-                if chord_idx < len(current_group):
-                    # Check if it's time to play this chord
-                    play_time = self.student_current_group * 8.0 + chord_idx * 1.0  # 1 second between chords
+            now = time.time()
+            
+            # Play next chord if enough time passed (1 second between chords)
+            if self.teacher_chord_index < len(current_group):
+                if now - self.teacher_last_play_time >= 1.0:
+                    chord = current_group[self.teacher_chord_index]
                     
-                    if now >= play_time and now < play_time + 0.1:
-                        # Play all notes in chord
-                        for note_info in chord['notes']:
-                            self.synth.note_on(note_info['note'], note_info['velocity'])
-                            self.note_on_signal.emit(note_info['note'], note_info['velocity'])
-                        
-                        # Schedule note off after 0.8 seconds
-                        if chord_idx == len(current_group) - 1:
-                            # Last chord of teacher's turn, switch to student
-                            pass
+                    # Play all notes in chord
+                    for note_info in chord['notes']:
+                        self.synth.note_on(note_info['note'], note_info['velocity'])
+                        self.note_on_signal.emit(note_info['note'], note_info['velocity'])
+                    
+                    # Update score to show this chord's position
+                    if 'time' in chord:
+                        self.playback_update.emit(chord['time'])
+                    
+                    print(f"Teacher playing chord {self.teacher_chord_index + 1}/{len(current_group)}")
+                    
+                    self.teacher_chord_index += 1
+                    self.teacher_last_play_time = now
+                    
+                    # If last chord, prepare to switch to student
+                    if self.teacher_chord_index >= len(current_group):
+                        print("Teacher finished! Now student's turn...")
+                        # Wait 1 second before switching
             
-            # Check if teacher finished playing all 4 chords
-            finish_time = self.student_current_group * 8.0 + len(current_group) * 1.0
-            if now >= finish_time:
+            # Check if teacher finished and enough time passed
+            if self.teacher_chord_index >= len(current_group) and now - self.teacher_last_play_time >= 1.0:
                 # Switch to student's turn
                 self.student_is_teacher_turn = False
                 self.student_chords_played = 0
                 self.student_waiting_for_chords = [chord['notes'] for chord in current_group]
                 self.waiting_for = set(note['note'] for note in current_group[0]['notes'])
                 self.waiting_for_notes.emit(list(self.waiting_for))
-                print(f"Student's turn! Waiting for {len(self.student_waiting_for_chords)} chords")
+                
+                # Light up the keys the student needs to press
+                for note in self.waiting_for:
+                    self.note_on_signal.emit(note, 80)
+                
+                print(f"Student's turn! Play chord 1/{len(current_group)}")
+                print(f"Waiting for notes: {sorted(list(self.waiting_for))}")
+                del self.teacher_chord_index  # Clean up for next round
+            
+            # Keep updating during teacher's turn
+            return
         
         else:
-            # Student's turn: wait for them to play the chords
+            # Student's turn: WAIT for them to play the chords (no automatic advance)
+            # Keep showing the current chord position on the score
+            if self.student_chords_played < len(current_group):
+                current_chord = current_group[self.student_chords_played]
+                if 'time' in current_chord:
+                    self.playback_update.emit(current_chord['time'])
+            
             if not self.waiting_for and self.student_chords_played < len(current_group):
                 # Student finished current chord, move to next
                 self.student_chords_played += 1
@@ -343,15 +497,23 @@ class MidiEngine(QObject):
                     next_chord = current_group[self.student_chords_played]
                     self.waiting_for = set(note['note'] for note in next_chord['notes'])
                     self.waiting_for_notes.emit(list(self.waiting_for))
-                    print(f"Chord {self.student_chords_played + 1}/{len(current_group)}")
+                    
+                    # Light up the next keys the student needs to press
+                    for note in self.waiting_for:
+                        self.note_on_signal.emit(note, 80)
+                    
+                    # Update score to show next chord position
+                    if 'time' in next_chord:
+                        self.playback_update.emit(next_chord['time'])
+                    
+                    print(f"Correct! Now play chord {self.student_chords_played + 1}/{len(current_group)}")
+                    print(f"Waiting for notes: {sorted(list(self.waiting_for))}")
                 else:
                     # Student finished all 4 chords, move to next group
-                    print("Student completed group! Moving to next...")
+                    print("Excellent! Student completed all 4 chords! Moving to next group...")
                     self.student_current_group += 1
                     self.student_is_teacher_turn = True
                     self.start_time = time.time()  # Reset timer for next group
-        
-        self.playback_update.emit(time.time() - self.start_time)
     
     def _handle_corrector_mode(self):
         """Corrector mode: Review and correct previous mistakes"""
@@ -367,8 +529,10 @@ class MidiEngine(QObject):
         self.synth.note_on(note, velocity)  # User feedback sound
         
         # Play audio for user input
-        if self.audio_synth:
+        if self.audio_type == 'fluidsynth' and self.audio_synth:
             self.audio_synth.noteon(0, note, velocity)
+        elif self.audio_type == 'pygame':
+            self._play_note_pygame(note, velocity)
         
         # PRACTICE MODE: Check if this is the note we're waiting for
         if self.mode == "Practice" and note in self.waiting_for:
@@ -398,8 +562,10 @@ class MidiEngine(QObject):
         self.synth.note_off(note)
         
         # Stop audio for user input
-        if self.audio_synth:
+        if self.audio_type == 'fluidsynth' and self.audio_synth:
             self.audio_synth.noteoff(0, note)
+        elif self.audio_type == 'pygame':
+            self._stop_note_pygame(note)
     
     def record_mistake(self, note, expected_note, time_occurred):
         """Record a mistake for Corrector mode"""

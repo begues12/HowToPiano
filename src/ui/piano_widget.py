@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QMouseEvent
+from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QMouseEvent, QFont
 
 class PianoWidget(QWidget):
     # Signals for mouse interaction
@@ -32,7 +32,12 @@ class PianoWidget(QWidget):
             4: QColor(255, 200, 100),   # Yellow - Ring
             5: QColor(200, 100, 255)    # Purple - Pinky
         }
-        self.show_note_names = True  # Show note names on keys
+        
+        # Visual options (can be toggled in settings)
+        self.show_note_names = True
+        self.show_finger_colors = True
+        self.show_finger_numbers = True
+        self.show_active_note_colors = True
 
     def set_num_keys(self, n):
         self.num_keys = n
@@ -52,14 +57,15 @@ class PianoWidget(QWidget):
         else:
             self.start_note = 21
 
-    def note_on(self, note, color=QColor("red")):
-        self.active_notes[note] = color
-        self.update()
+    def note_on(self, note, color):
+        if self.show_active_note_colors:
+            self.active_notes[note] = color
+            self.update()
 
     def note_off(self, note):
         if note in self.active_notes:
             del self.active_notes[note]
-        self.update()
+            self.update()
     
     def set_finger_assignment(self, note, finger):
         """Assign a finger (1-5) to a note"""
@@ -116,7 +122,7 @@ class PianoWidget(QWidget):
                 # Color
                 if note in self.active_notes:
                     brush = QBrush(self.active_notes[note])
-                elif note in self.finger_assignments:
+                elif note in self.finger_assignments and self.show_finger_colors:
                     # Use finger color with transparency
                     finger = self.finger_assignments[note]
                     color = self.get_finger_color(finger)
@@ -136,10 +142,9 @@ class PianoWidget(QWidget):
                                    self.get_note_name(note))
                 
                 # Draw finger number if assigned
-                if note in self.finger_assignments:
+                if note in self.finger_assignments and self.show_finger_numbers:
                     finger = self.finger_assignments[note]
                     painter.setPen(QPen(self.get_finger_color(finger)))
-                    from PyQt6.QtGui import QFont
                     font = QFont("Arial", 14, QFont.Weight.Bold)
                     painter.setFont(font)
                     painter.drawText(r, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter, 
@@ -173,7 +178,7 @@ class PianoWidget(QWidget):
                 
                 if note in self.active_notes:
                     brush = QBrush(self.active_notes[note])
-                elif note in self.finger_assignments:
+                elif note in self.finger_assignments and self.show_finger_colors:
                     # Use finger color with transparency
                     finger = self.finger_assignments[note]
                     color = self.get_finger_color(finger)
@@ -189,17 +194,16 @@ class PianoWidget(QWidget):
                 # Draw note name on black keys
                 if self.show_note_names:
                     painter.setPen(QPen(Qt.GlobalColor.white))
-                    from PyQt6.QtGui import QFont
                     font = QFont("Arial", 8)
                     painter.setFont(font)
                     painter.drawText(r, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, 
                                    self.get_note_name(note))
                 
-                # Draw finger number if assigned
-                if note in self.finger_assignments:
+                # Draw finger number on black keys
+                if note in self.finger_assignments and self.show_finger_numbers:
                     finger = self.finger_assignments[note]
-                    painter.setPen(QPen(Qt.GlobalColor.white))
-                    font = QFont("Arial", 12, QFont.Weight.Bold)
+                    painter.setPen(QPen(QColor(255, 255, 255)))
+                    font = QFont("Arial", 10, QFont.Weight.Bold)
                     painter.setFont(font)
                     painter.drawText(r, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter, 
                                    str(finger))
@@ -234,7 +238,7 @@ class PianoWidget(QWidget):
                 self.mouse_pressed_notes.add(note)
                 velocity = 100  # Default velocity for mouse clicks
                 self.note_pressed.emit(note, velocity)
-                self.note_on(note, QColor("cyan"))  # Visual feedback
+                self.note_on(note, QColor(255, 140, 0))  # Bright orange for user input
     
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Handle mouse release"""

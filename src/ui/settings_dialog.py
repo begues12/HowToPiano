@@ -123,14 +123,28 @@ class SettingsDialog(QDialog):
             self.start_key_combo.setCurrentIndex(0)  # A0 default for 88 keys
         layout.addRow("Starting Key:", self.start_key_combo)
         
-        # Visual options
-        self.show_key_labels = QCheckBox("Show key labels (C, D, E...)")
-        self.show_key_labels.setChecked(settings.get("show_key_labels", True) if settings else True)
-        layout.addRow("", self.show_key_labels)
+        # Visual options group
+        visual_group = QGroupBox("Visual Options")
+        visual_layout = QVBoxLayout()
         
-        self.show_octave_numbers = QCheckBox("Show octave numbers")
-        self.show_octave_numbers.setChecked(settings.get("show_octave_numbers", False) if settings else False)
-        layout.addRow("", self.show_octave_numbers)
+        self.show_key_labels = QCheckBox("Show note names on keys (C, D, E...)")
+        self.show_key_labels.setChecked(settings.get("show_key_labels", True) if settings else True)
+        visual_layout.addWidget(self.show_key_labels)
+        
+        self.show_finger_colors = QCheckBox("Show finger colors on keys")
+        self.show_finger_colors.setChecked(settings.get("show_finger_colors", True) if settings else True)
+        visual_layout.addWidget(self.show_finger_colors)
+        
+        self.show_finger_numbers = QCheckBox("Show finger numbers (1-5)")
+        self.show_finger_numbers.setChecked(settings.get("show_finger_numbers", True) if settings else True)
+        visual_layout.addWidget(self.show_finger_numbers)
+        
+        self.show_active_note_colors = QCheckBox("Show colors when notes are played")
+        self.show_active_note_colors.setChecked(settings.get("show_active_note_colors", True) if settings else True)
+        visual_layout.addWidget(self.show_active_note_colors)
+        
+        visual_group.setLayout(visual_layout)
+        layout.addRow(visual_group)
         
         layout.addRow(QLabel(""))  # Spacer
         
@@ -289,7 +303,9 @@ class SettingsDialog(QDialog):
             "keys": int(self.keys_combo.currentText()),
             "start_key": self.start_key_combo.currentText(),
             "show_key_labels": self.show_key_labels.isChecked(),
-            "show_octave_numbers": self.show_octave_numbers.isChecked(),
+            "show_finger_colors": self.show_finger_colors.isChecked(),
+            "show_finger_numbers": self.show_finger_numbers.isChecked(),
+            "show_active_note_colors": self.show_active_note_colors.isChecked(),
             
             # Audio
             "sound": self.sound_combo.currentText(),

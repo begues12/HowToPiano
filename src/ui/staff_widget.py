@@ -356,6 +356,9 @@ class StaffWidget(QWidget):
             # Draw staff lines (5 lines for treble clef)
             self.draw_staff(painter)
             
+            # Draw time divisions
+            self.draw_time_divisions(painter)
+            
             # Draw notes
             self.draw_notes(painter)
             
@@ -385,6 +388,37 @@ class StaffWidget(QWidget):
         clef_x = 10  # Fixed position
         clef_y = center_y - self.staff_spacing  # Position on second line from bottom (G4)
         painter.drawText(int(clef_x), int(clef_y + 50), "\uE050")
+    
+    def draw_time_divisions(self, painter):
+        """Draw vertical time division lines"""
+        center_y = self.height() / 2
+        top_y = center_y - (2 * self.staff_spacing)
+        bottom_y = center_y + (2 * self.staff_spacing)
+        
+        # Draw time markers every 5 seconds
+        marker_interval = 5  # seconds
+        
+        # Calculate which markers are visible
+        start_time = max(0, int(self.scroll_offset / self.pixels_per_second / marker_interval) * marker_interval)
+        end_time = int((self.scroll_offset + self.width()) / self.pixels_per_second) + marker_interval
+        
+        painter.setPen(QPen(QColor(200, 200, 200), 1))
+        painter.setFont(QFont("Arial", 9))
+        
+        for time_sec in range(start_time, end_time, marker_interval):
+            x = self.left_margin + (time_sec * self.pixels_per_second) - self.scroll_offset
+            
+            if x >= self.left_margin and x <= self.width():
+                # Draw vertical line through staff
+                painter.drawLine(int(x), int(top_y), int(x), int(bottom_y))
+                
+                # Draw time label below staff
+                minutes = int(time_sec // 60)
+                seconds = int(time_sec % 60)
+                time_text = f"{minutes}:{seconds:02d}"
+                painter.setPen(QPen(QColor(100, 100, 100), 1))
+                painter.drawText(int(x - 15), int(bottom_y + 20), time_text)
+                painter.setPen(QPen(QColor(200, 200, 200), 1))
     
     def draw_notes(self, painter):
         """Draw all notes as ellipses"""

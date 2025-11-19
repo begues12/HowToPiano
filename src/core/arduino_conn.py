@@ -32,12 +32,8 @@ class ArduinoWorker(QObject):
 
         while self.running:
             if self.mock:
-                # Simulate random notes for testing
-                if random.random() < 0.05:
-                    note = random.randint(60, 72)
-                    self.note_on.emit(note, 100)
-                    QThread.msleep(200)
-                    self.note_off.emit(note)
+                # Mock mode - no automatic notes, only responds to real input
+                # (Notes will come from mouse/MIDI controller instead)
                 QThread.msleep(100)
             else:
                 if self.serial and self.serial.in_waiting:

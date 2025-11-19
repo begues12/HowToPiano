@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QFileDialog, QMessageBox
 from PyQt6.QtCore import Qt, QThread, QSize
 
@@ -11,6 +12,7 @@ from src.ui.staff_widget import StaffWidget
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.piano_widget import PianoWidget
 from src.ui.song_list_widget import SongListWidget
+from src.ui.progress_bar import ProgressBar
 from PyQt6.QtGui import QColor
 
 class MainWindow(QMainWindow):
@@ -19,11 +21,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("How To Piano")
         self.resize(1200, 900)
         
-        # Default Settings
-        self.settings = {
-            "keys": 88,
-            "port": "COM3"
-        }
+        # Settings file path
+        self.settings_file = os.path.join(os.getcwd(), "settings.json")
+        
+        # Load settings or use defaults
+        self.settings = self.load_settings()
 
         # Initialize Core Components
         # Try to find a soundfont in assets
@@ -82,10 +84,22 @@ class MainWindow(QMainWindow):
         self.score_view.setMinimumHeight(400)
         right_layout.addWidget(self.score_view, stretch=10)
         
+        # Progress Bar (above piano)
+        self.progress_bar = ProgressBar()
+        self.progress_bar.seek_requested.connect(self.seek_to_time)
+        main_v_layout.addWidget(self.progress_bar)
+        
         # Piano Widget (Piano - bottom, full width at bottom of entire window)
         self.piano_widget = PianoWidget(num_keys=self.settings["keys"])
         self.piano_widget.setMinimumHeight(100)
         self.piano_widget.setMaximumHeight(150)
+        
+        # Apply saved visual settings to piano
+        self.piano_widget.show_note_names = self.settings.get("show_key_labels", True)
+        self.piano_widget.show_finger_colors = self.settings.get("show_finger_colors", True)
+        self.piano_widget.show_finger_numbers = self.settings.get("show_finger_numbers", True)
+        self.piano_widget.show_active_note_colors = self.settings.get("show_active_note_colors", True)
+        
         main_v_layout.addWidget(self.piano_widget)
 
         # Arduino (Mock by default for safety, user can configure)
@@ -98,8 +112,8 @@ class MainWindow(QMainWindow):
         self.arduino.note_on.connect(self.midi_engine.on_user_note_on)
         self.arduino.note_off.connect(self.midi_engine.on_user_note_off)
         
-        # Connect Arduino -> PianoWidget (Visual Feedback)
-        self.arduino.note_on.connect(lambda n, v: self.piano_widget.note_on(n, QColor("green")))
+        # Connect Arduino -> PianoWidget (Visual Feedback with bright orange for user input)
+        self.arduino.note_on.connect(lambda n, v: self.piano_widget.note_on(n, QColor(255, 140, 0)))
         self.arduino.note_off.connect(lambda n: self.piano_widget.note_off(n))
         
         # Connect PianoWidget Mouse -> MidiEngine (Interactive Piano)
@@ -298,6 +312,11 @@ class MainWindow(QMainWindow):
                 # Load into staff widget
                 self.score_view.load_midi_notes(file_name)
                 
+                # Set progress bar duration
+                if self.midi_engine.events:
+                    total_time = max(evt['time'] for evt in self.midi_engine.events)
+                    self.progress_bar.set_duration(total_time)
+                
                 # Check and adapt to piano range
                 self.adapt_song_to_piano()
                 
@@ -315,10 +334,20 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             new_settings = dlg.get_settings()
             self.settings.update(new_settings)
-            print(f"New Settings: {self.settings}")
+            
+            # Save settings to file
+            self.save_settings()
+            print(f"Settings saved: {self.settings}")
             
             # Update Piano Widget
             self.piano_widget.set_num_keys(self.settings["keys"])
+            
+            # Apply visual settings
+            self.piano_widget.show_note_names = self.settings.get("show_key_labels", True)
+            self.piano_widget.show_finger_colors = self.settings.get("show_finger_colors", True)
+            self.piano_widget.show_finger_numbers = self.settings.get("show_finger_numbers", True)
+            self.piano_widget.show_active_note_colors = self.settings.get("show_active_note_colors", True)
+            self.piano_widget.update()
             
             # TODO: Apply settings (e.g. reconnect Arduino if port changed)
 
@@ -443,6 +472,7 @@ class MainWindow(QMainWindow):
         self.midi_input_selector.clear()
         
         # Add mock mode option
+        self.midi_input_selector.addItem("-")
         self.midi_input_selector.addItem("Mock Mode (Demo)")
         
         # Get available MIDI input ports
@@ -498,6 +528,11 @@ class MainWindow(QMainWindow):
                 if self.midi_engine.load_midi(actual_path):
                     self.score_view.load_midi_notes(actual_path)
                     
+                    # Set progress bar duration
+                    if self.midi_engine.events:
+                        total_time = max(evt['time'] for evt in self.midi_engine.events)
+                        self.progress_bar.set_duration(total_time)
+                    
                     # Check and adapt to piano range
                     self.adapt_song_to_piano()
                     
@@ -512,13 +547,25 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Song file not found: {actual_path}")
     
     def update_playback_time(self, time_sec):
-        # Update status or scroll score
-        # self.status_label.setText(f"Time: {time_sec:.1f}s")
+        # Update progress bar and score
+        self.progress_bar.set_time(time_sec)
         self.score_view.set_playback_time(time_sec)
+    
+    def seek_to_time(self, time_sec):
+        """Seek to specific time in song"""
+        if hasattr(self.midi_engine, 'seek'):
+            self.midi_engine.seek(time_sec)
+        else:
+            # Simple seek by stopping and adjusting
+            was_playing = self.midi_engine.is_playing
+            self.midi_engine.stop()
+            self.midi_engine.paused_at = time_sec
+            if was_playing:
+                self.midi_engine.play()
 
     def on_playback_note_on(self, note, velocity):
-        # Called when the MIDI file plays a note
-        self.piano_widget.note_on(note, QColor("blue"))
+        # Called when the MIDI file plays a note - use cyan/turquoise for playback
+        self.piano_widget.note_on(note, QColor(0, 200, 255))  # Bright cyan
         self.score_view.note_on(note)
         
     def on_playback_note_off(self, note):
@@ -587,7 +634,55 @@ class MainWindow(QMainWindow):
             self.mode_label.setText("Master Mode")
             self.setWindowTitle("How To Piano")
     
+    def load_settings(self):
+        """Load settings from file or return defaults"""
+        default_settings = {
+            "keys": 88,
+            "port": "COM3",
+            "start_key": "A0 (21)",
+            "show_key_labels": True,
+            "show_finger_colors": True,
+            "show_finger_numbers": True,
+            "show_active_note_colors": True,
+            "sound": "Classic Piano",
+            "volume": 80,
+            "metronome_volume": 50,
+            "audio_latency": 50,
+            "preparation_time": 3,
+            "wait_time": 10,
+            "show_hints": True,
+            "auto_pause": False,
+            "show_mistakes": True,
+            "repeat_section": False,
+            "practice_tempo": 75,
+            "baud_rate": 9600,
+            "auto_reconnect": True
+        }
+        
+        if os.path.exists(self.settings_file):
+            try:
+                with open(self.settings_file, 'r') as f:
+                    loaded_settings = json.load(f)
+                    default_settings.update(loaded_settings)
+                    print(f"Settings loaded from {self.settings_file}")
+            except Exception as e:
+                print(f"Error loading settings: {e}")
+        
+        return default_settings
+    
+    def save_settings(self):
+        """Save settings to file"""
+        try:
+            with open(self.settings_file, 'w') as f:
+                json.dump(self.settings, f, indent=2)
+            print(f"Settings saved to {self.settings_file}")
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+    
     def closeEvent(self, event):
+        # Save settings before closing
+        self.save_settings()
+        
         self.arduino.stop()
         self.arduino_thread.quit()
         self.arduino_thread.wait()
