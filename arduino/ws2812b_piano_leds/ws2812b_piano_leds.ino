@@ -61,7 +61,36 @@ void loop() {
 }
 
 void processCommand(String cmd) {
-  if (cmd.startsWith("LED:")) {
+  if (cmd.startsWith("ON:")) {
+    // Format: ON:note:brightness
+    cmd.remove(0, 3); // Remove "ON:"
+    
+    int colon = cmd.indexOf(':');
+    if (colon > 0) {
+      int midiNote = cmd.substring(0, colon).toInt();
+      int brightness = cmd.substring(colon + 1).toInt();
+      
+      // Convert MIDI note to note name for feedback
+      String noteName = midiToNoteName(midiNote);
+      
+      // Turn on LED with green color (brightness controlled)
+      int r = 0;
+      int g = brightness * 255 / 100;  // Scale 0-100 to 0-255
+      int b = 0;
+      
+      setNoteLED(midiNote, r, g, b);
+      
+      // Send feedback
+      Serial.print("LED ON: ");
+      Serial.print(noteName);
+      Serial.print(" (MIDI ");
+      Serial.print(midiNote);
+      Serial.print(", LED index ");
+      Serial.print(midiNote - 21);
+      Serial.println(")");
+    }
+  }
+  else if (cmd.startsWith("LED:")) {
     // Format: LED:note,r,g,b
     cmd.remove(0, 4); // Remove "LED:"
     
@@ -76,6 +105,18 @@ void processCommand(String cmd) {
       int b = cmd.substring(thirdComma + 1).toInt();
       
       setNoteLED(midiNote, r, g, b);
+      
+      // Send feedback
+      String noteName = midiToNoteName(midiNote);
+      Serial.print("LED: ");
+      Serial.print(noteName);
+      Serial.print(" RGB(");
+      Serial.print(r);
+      Serial.print(",");
+      Serial.print(g);
+      Serial.print(",");
+      Serial.print(b);
+      Serial.println(")");
     }
   }
   else if (cmd.startsWith("BATCH:")) {
@@ -113,7 +154,16 @@ void processCommand(String cmd) {
   else if (cmd.startsWith("OFF:")) {
     // Format: OFF:note
     int midiNote = cmd.substring(4).toInt();
+    String noteName = midiToNoteName(midiNote);
+    
     setNoteLED(midiNote, 0, 0, 0);
+    
+    // Send feedback
+    Serial.print("LED OFF: ");
+    Serial.print(noteName);
+    Serial.print(" (MIDI ");
+    Serial.print(midiNote);
+    Serial.println(")");
   }
   else if (cmd == "CLEAR") {
     clearAllLEDs();
@@ -131,6 +181,16 @@ void processCommand(String cmd) {
     // Quick response test for latency measurement
     Serial.println("PONG");
   }
+}
+
+String midiToNoteName(int midiNote) {
+  // MIDI note to note name conversion
+  String noteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+  
+  int noteIndex = midiNote % 12;
+  int octave = (midiNote / 12) - 1;
+  
+  return noteNames[noteIndex] + String(octave);
 }
 
 void setNoteLED(int midiNote, int r, int g, int b) {
