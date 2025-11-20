@@ -299,14 +299,20 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(widget)
         layout.setSpacing(15)
         
-        # Arduino Port
+        # Arduino Port with auto-detection
+        port_layout_conn = QHBoxLayout()
         self.port_input = QComboBox()
-        self.port_input.addItems(["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", 
-                                  "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"])
-        self.port_input.setEditable(True)
-        if settings and "port" in settings:
-            self.port_input.setCurrentText(settings["port"])
-        layout.addRow("Arduino Port:", self.port_input)
+        self.port_input.setMinimumWidth(300)
+        self._refresh_connection_ports(settings)
+        port_layout_conn.addWidget(self.port_input)
+        
+        refresh_conn_btn = QPushButton("🔄")
+        refresh_conn_btn.setMaximumWidth(40)
+        refresh_conn_btn.setToolTip("Refresh available ports")
+        refresh_conn_btn.clicked.connect(lambda: self._refresh_connection_ports(settings))
+        port_layout_conn.addWidget(refresh_conn_btn)
+        
+        layout.addRow("Arduino Port:", port_layout_conn)
         
         # Baud rate
         self.baud_combo = QComboBox()
@@ -378,16 +384,20 @@ class SettingsDialog(QDialog):
         comm_group = QGroupBox("Communication")
         comm_layout = QFormLayout()
         
-        # Arduino Port for LedTeacher
+        # Arduino Port for LedTeacher with auto-detection
+        port_layout_led = QHBoxLayout()
         self.ledteacher_port = QComboBox()
-        self.ledteacher_port.addItems(["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-                                       "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"])
-        self.ledteacher_port.setEditable(True)
-        if settings and "ledteacher_port" in settings:
-            self.ledteacher_port.setCurrentText(settings["ledteacher_port"])
-        else:
-            self.ledteacher_port.setCurrentText("COM4")
-        comm_layout.addRow("Arduino Port:", self.ledteacher_port)
+        self.ledteacher_port.setMinimumWidth(300)
+        self._refresh_ledteacher_ports(settings)
+        port_layout_led.addWidget(self.ledteacher_port)
+        
+        refresh_led_btn = QPushButton("🔄")
+        refresh_led_btn.setMaximumWidth(40)
+        refresh_led_btn.setToolTip("Refresh available ports")
+        refresh_led_btn.clicked.connect(lambda: self._refresh_ledteacher_ports(settings))
+        port_layout_led.addWidget(refresh_led_btn)
+        
+        comm_layout.addRow("Arduino Port:", port_layout_led)
         
         # Baud rate for LedTeacher
         self.ledteacher_baud = QComboBox()
@@ -403,6 +413,69 @@ class SettingsDialog(QDialog):
         
         layout.addRow(QLabel(""))  # Spacer
         
+        # Test Connection Group
+        test_group = QGroupBox("🧪 Test Connection")
+        test_layout = QVBoxLayout()
+        
+        test_info = QLabel("Test the Arduino connection by lighting LEDs and playing sounds.")
+        test_info.setWordWrap(True)
+        test_info.setStyleSheet("color: #bdc3c7; font-style: italic; padding: 5px;")
+        test_layout.addWidget(test_info)
+        
+        test_btn = QPushButton("🎹 Test Connection (LEDs + Sound)")
+        test_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                padding: 10px;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+            QPushButton:pressed {
+                background-color: #21618c;
+            }
+        """)
+        test_btn.clicked.connect(self._test_arduino_connection)
+        test_layout.addWidget(test_btn)
+        
+        self.test_status_label = QLabel("")
+        self.test_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.test_status_label.setStyleSheet("padding: 5px; font-size: 12px;")
+        test_layout.addWidget(self.test_status_label)
+        
+        # Arduino Response Console
+        console_label = QLabel("Arduino Responses:")
+        console_label.setStyleSheet("color: #bdc3c7; font-weight: bold; margin-top: 10px;")
+        test_layout.addWidget(console_label)
+        
+        self.arduino_console = QTextEdit()
+        self.arduino_console.setReadOnly(True)
+        self.arduino_console.setMaximumHeight(150)
+        self.arduino_console.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                border: 1px solid #3e3e3e;
+                border-radius: 3px;
+                font-family: 'Courier New', monospace;
+                font-size: 10px;
+                padding: 5px;
+            }
+        """)
+        self.arduino_console.setPlaceholderText("Arduino responses will appear here...")
+        test_layout.addWidget(self.arduino_console)
+        
+        clear_console_btn = QPushButton("🗑️ Clear Console")
+        clear_console_btn.clicked.connect(self.arduino_console.clear)
+        clear_console_btn.setMaximumWidth(150)
+        test_layout.addWidget(clear_console_btn)
+        
+        test_group.setLayout(test_layout)
+        layout.addRow(test_group)
+        
         return widget
         
     def _choose_played_note_color(self):
@@ -411,6 +484,366 @@ class SettingsDialog(QDialog):
         if color.isValid():
             self.played_note_color = color
             self.played_note_color_btn.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()});")
+    
+    def _refresh_connection_ports(self, settings=None):
+        """Refresh and populate Connection port selector with available ports"""
+        import serial.tools.list_ports
+        
+        self.port_input.clear()
+        ports = serial.tools.list_ports.comports()
+        
+        # Store the mapping of display text to actual port
+        self.connection_port_map = {}
+        
+        if not ports:
+            self.port_input.addItem("❌ No ports found")
+            return
+        
+        # Get saved port from settings
+        saved_port = settings.get("port", "COM3") if settings else "COM3"
+        
+        # Add each port with its description
+        for i, port in enumerate(ports):
+            # Create readable display name
+            display_name = f"{port.device} - {port.description}"
+            if port.manufacturer:
+                display_name += f" ({port.manufacturer})"
+            
+            self.port_input.addItem(display_name)
+            self.connection_port_map[display_name] = port.device
+            
+            # Select the saved port
+            if port.device == saved_port:
+                self.port_input.setCurrentIndex(i)
+        
+        # If saved port not found, try to select Arduino/CH340/CP210x
+        if self.port_input.currentIndex() == -1:
+            for i in range(self.port_input.count()):
+                text = self.port_input.itemText(i).lower()
+                if any(keyword in text for keyword in ["arduino", "ch340", "cp210", "usb-serial", "ftdi"]):
+                    self.port_input.setCurrentIndex(i)
+                    break
+    
+    def _get_actual_connection_port(self):
+        """Get the actual COM port from the selected display text"""
+        display_text = self.port_input.currentText()
+        return self.connection_port_map.get(display_text, display_text.split(" - ")[0] if " - " in display_text else display_text)
+    
+    def _refresh_ledteacher_ports(self, settings=None):
+        """Refresh and populate LedTeacher port selector with available ports"""
+        import serial.tools.list_ports
+        
+        self.ledteacher_port.clear()
+        ports = serial.tools.list_ports.comports()
+        
+        # Store the mapping of display text to actual port
+        self.ledteacher_port_map = {}
+        
+        if not ports:
+            self.ledteacher_port.addItem("❌ No ports found")
+            return
+        
+        # Get saved port from settings
+        saved_port = settings.get("ledteacher_port", "COM4") if settings else "COM4"
+        
+        # Add each port with its description
+        for i, port in enumerate(ports):
+            # Create readable display name
+            display_name = f"{port.device} - {port.description}"
+            if port.manufacturer:
+                display_name += f" ({port.manufacturer})"
+            
+            self.ledteacher_port.addItem(display_name)
+            self.ledteacher_port_map[display_name] = port.device
+            
+            # Select the saved port
+            if port.device == saved_port:
+                self.ledteacher_port.setCurrentIndex(i)
+        
+        # If saved port not found, try to select Arduino/CH340/CP210x
+        if self.ledteacher_port.currentIndex() == -1:
+            for i in range(self.ledteacher_port.count()):
+                text = self.ledteacher_port.itemText(i).lower()
+                if any(keyword in text for keyword in ["arduino", "ch340", "cp210", "usb-serial", "ftdi"]):
+                    self.ledteacher_port.setCurrentIndex(i)
+                    break
+    
+    def _get_actual_ledteacher_port(self):
+        """Get the actual COM port from the selected display text"""
+        display_text = self.ledteacher_port.currentText()
+        return self.ledteacher_port_map.get(display_text, display_text.split(" - ")[0] if " - " in display_text else display_text)
+    
+    def _find_process_using_port(self, port):
+        """Try to find which process is using the serial port (Windows only)"""
+        try:
+            import subprocess
+            import re
+            
+            print(f"\n🔍 Searching for process using {port}...")
+            
+            # Check for common programs that use serial ports
+            common_culprits = {
+                'arduino': 'Arduino IDE',
+                'arduino_debug': 'Arduino IDE (Debug)',
+                'platformio-ide': 'PlatformIO IDE',
+                'python': 'Python (maybe this program!)',
+                'putty': 'PuTTY',
+                'teraterm': 'TeraTerm',
+                'realterm': 'RealTerm',
+                'com0com': 'COM0COM',
+                'vscodium': 'VSCodium/VSCode'
+            }
+            
+            # Get list of running processes
+            result = subprocess.run(
+                ['tasklist', '/FO', 'CSV', '/NH'],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+            
+            if result.returncode == 0:
+                output = result.stdout.lower()
+                print(f"  📋 Scanning {len(output.splitlines())} running processes...")
+                
+                for proc_key, proc_name in common_culprits.items():
+                    if proc_key in output:
+                        print(f"  ✓ Found: {proc_name}")
+                        return proc_name
+                
+                print("  ℹ️ No common serial programs found running")
+            
+            return None
+            
+        except Exception as e:
+            print(f"  ⚠️ Could not detect process: {e}")
+            return None
+    
+    def _test_arduino_connection(self):
+        """Test Arduino connection with LEDs and sound"""
+        import serial
+        import time
+        import pygame
+        from PyQt6.QtCore import QTimer
+        
+        print("\n" + "="*60)
+        print("🧪 ARDUINO CONNECTION TEST - DEBUG MODE")
+        print("="*60)
+        
+        # Validate port selection
+        port = self._get_actual_ledteacher_port()
+        baud = int(self.ledteacher_baud.currentText())
+        
+        print(f"Selected display text: {self.ledteacher_port.currentText()}")
+        print(f"Mapped port: {port}")
+        print(f"Baud rate: {baud}")
+        
+        if not port or "No ports" in port or port.startswith("❌"):
+            print("❌ ERROR: No valid port selected")
+            self.test_status_label.setText("❌ No port selected! Click 🔄 to refresh.")
+            self.test_status_label.setStyleSheet("background-color: #e74c3c; color: white; padding: 5px; font-size: 12px; border-radius: 3px;")
+            QTimer.singleShot(5000, lambda: self.test_status_label.setText(""))
+            return
+        
+        print(f"✓ Attempting connection to {port} at {baud} baud...")
+        self.test_status_label.setText(f"⏳ Connecting to {port}...")
+        self.test_status_label.setStyleSheet("background-color: #f39c12; color: white; padding: 5px; font-size: 12px; border-radius: 3px;")
+        
+        try:
+            # Initialize pygame mixer for sound
+            print("🔊 Initializing pygame mixer...")
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+                print("✓ Pygame mixer initialized")
+            else:
+                print("✓ Pygame mixer already initialized")
+            
+            # Connect to Arduino
+            print(f"🔌 Opening serial port {port}...")
+            ser = serial.Serial(port, baud, timeout=0.1)
+            print(f"✓ Serial port opened successfully")
+            print(f"⏳ Waiting 2 seconds for Arduino reset...")
+            time.sleep(2)  # Wait for Arduino reset
+            print("✓ Arduino should be ready")
+            
+            self.test_status_label.setText("✅ Connected! Testing...")
+            self.test_status_label.setStyleSheet("background-color: #27ae60; color: white; padding: 5px; font-size: 12px; border-radius: 3px;")
+            
+            # Test sequence: C major scale (C4 to C5)
+            test_notes = [60, 62, 64, 65, 67, 69, 71, 72]  # C D E F G A B C
+            note_names = ["C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5"]
+            
+            print(f"\n🎹 Starting test sequence: {len(test_notes)} notes")
+            print("-" * 60)
+            
+            for i, (note, name) in enumerate(zip(test_notes, note_names)):
+                print(f"\n[{i+1}/{len(test_notes)}] Note: {name} (MIDI {note})")
+                
+                # Update status
+                self.test_status_label.setText(f"🎵 Playing: {name} ({i+1}/{len(test_notes)})")
+                
+                # Send LED command to Arduino
+                command = f"ON:{note}:100\n"
+                print(f"  📡 Sending to Arduino: {command.strip()}")
+                self.arduino_console.append(f">>> {command.strip()}")
+                ser.write(command.encode())
+                print(f"  ✓ Command sent successfully")
+                
+                # Read Arduino response (with timeout)
+                response_start = time.time()
+                while time.time() - response_start < 0.1:  # 100ms timeout
+                    if ser.in_waiting > 0:
+                        response = ser.readline().decode('utf-8', errors='ignore').strip()
+                        if response:
+                            print(f"  ← Arduino: {response}")
+                            self.arduino_console.append(f"<<< {response}")
+                            self.arduino_console.verticalScrollBar().setValue(
+                                self.arduino_console.verticalScrollBar().maximum()
+                            )
+                    time.sleep(0.01)
+                
+                # Play sound
+                try:
+                    # Generate a simple sine wave tone
+                    frequency = 440 * (2 ** ((note - 69) / 12))  # A4 = 440Hz
+                    sample_rate = 44100
+                    duration = 0.3
+                    
+                    print(f"  🔊 Generating tone: {frequency:.1f} Hz")
+                    
+                    import numpy as np
+                    t = np.linspace(0, duration, int(sample_rate * duration))
+                    wave = np.sin(2 * np.pi * frequency * t)
+                    
+                    # Apply envelope
+                    envelope = np.ones_like(wave)
+                    fade_samples = int(0.05 * sample_rate)
+                    envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
+                    envelope[-fade_samples:] = np.linspace(1, 0, fade_samples)
+                    wave = wave * envelope * 0.3
+                    
+                    # Convert to 16-bit
+                    wave = np.int16(wave * 32767)
+                    stereo_wave = np.column_stack((wave, wave))
+                    
+                    sound = pygame.sndarray.make_sound(stereo_wave)
+                    sound.play()
+                    print(f"  ✓ Sound playing")
+                    
+                except Exception as e:
+                    print(f"  ❌ Sound error: {e}")
+                
+                # Wait
+                print(f"  ⏳ Waiting 400ms...")
+                time.sleep(0.4)
+                
+                # Turn off LED
+                off_command = f"OFF:{note}\n"
+                print(f"  📡 Sending OFF: {off_command.strip()}")
+                self.arduino_console.append(f">>> {off_command.strip()}")
+                ser.write(off_command.encode())
+                
+                # Read Arduino response for OFF command
+                response_start = time.time()
+                while time.time() - response_start < 0.1:  # 100ms timeout
+                    if ser.in_waiting > 0:
+                        response = ser.readline().decode('utf-8', errors='ignore').strip()
+                        if response:
+                            print(f"  ← Arduino: {response}")
+                            self.arduino_console.append(f"<<< {response}")
+                            self.arduino_console.verticalScrollBar().setValue(
+                                self.arduino_console.verticalScrollBar().maximum()
+                            )
+                    time.sleep(0.01)
+                
+                print(f"  ⏳ Waiting 100ms...")
+                time.sleep(0.1)
+            
+            # Close connection
+            print("\n" + "-" * 60)
+            print("🔌 Closing serial connection...")
+            ser.close()
+            print("✓ Serial connection closed")
+            
+            self.test_status_label.setText("✅ Test completed successfully!")
+            self.test_status_label.setStyleSheet("background-color: #27ae60; color: white; padding: 5px; font-size: 12px; border-radius: 3px;")
+            
+            print("\n✅ TEST COMPLETED SUCCESSFULLY")
+            print("="*60 + "\n")
+            
+            # Clear status after 3 seconds
+            QTimer.singleShot(3000, lambda: self.test_status_label.setText(""))
+            
+        except serial.SerialException as e:
+            error_msg = str(e)
+            
+            print("\n" + "="*60)
+            print("❌ SERIAL EXCEPTION CAUGHT")
+            print("="*60)
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {error_msg}")
+            print(f"Port attempted: {port}")
+            print(f"Baud rate: {baud}")
+            
+            # Try to find which process is using the port
+            port_in_use_by = self._find_process_using_port(port)
+            if port_in_use_by:
+                print(f"🔍 Port in use by: {port_in_use_by}")
+            
+            # Provide specific error messages
+            if "PermissionError" in error_msg or "Access is denied" in error_msg:
+                if port_in_use_by:
+                    msg = f"❌ Port {port} in use by {port_in_use_by}! Close it first."
+                else:
+                    msg = f"❌ Port {port} in use! Close Arduino IDE, Serial Monitor, or other programs."
+                print("Diagnosis: Port is being used by another program")
+            elif "FileNotFoundError" in error_msg or "could not open port" in error_msg:
+                msg = f"❌ Port {port} not found! Check cable and click 🔄"
+                print("Diagnosis: Port does not exist or device disconnected")
+            elif "com" in port.lower() and int(port.replace("COM", "")) > 10:
+                msg = f"❌ Port {port} unavailable. Try unplugging/replugging Arduino."
+                print("Diagnosis: High COM number may indicate driver issues")
+            else:
+                # Show full error message without truncation
+                msg = f"❌ {error_msg}"
+                if len(msg) > 80:
+                    msg = f"❌ {error_msg[:77]}..."
+                print("Diagnosis: Unknown serial error")
+            
+            print(f"User message: {msg}")
+            print("\n💡 SOLUTIONS:")
+            print("  1. Close Arduino IDE (especially Serial Monitor)")
+            print("  2. Close any other serial terminal programs (PuTTY, etc.)")
+            print("  3. Close other instances of this program")
+            print("  4. Unplug and replug the Arduino USB cable")
+            print("  5. Try selecting a different port from the dropdown")
+            print("="*60 + "\n")
+            
+            self.test_status_label.setText(msg)
+            self.test_status_label.setStyleSheet("background-color: #e74c3c; color: white; padding: 5px; font-size: 11px; border-radius: 3px;")
+            self.test_status_label.setWordWrap(True)
+            QTimer.singleShot(10000, lambda: self.test_status_label.setText(""))
+            
+        except Exception as e:
+            error_msg = str(e)
+            
+            print("\n" + "="*60)
+            print("❌ UNEXPECTED EXCEPTION CAUGHT")
+            print("="*60)
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {error_msg}")
+            
+            # Print full traceback for debugging
+            import traceback
+            print("\nFull traceback:")
+            traceback.print_exc()
+            print("="*60 + "\n")
+            
+            msg = f"❌ Unexpected error: {error_msg[:60]}..."
+            self.test_status_label.setText(msg)
+            self.test_status_label.setStyleSheet("background-color: #e74c3c; color: white; padding: 5px; font-size: 11px; border-radius: 3px;")
+            self.test_status_label.setWordWrap(True)
+            QTimer.singleShot(8000, lambda: self.test_status_label.setText(""))
     
     def get_settings(self):
         """Return all settings as dictionary"""
@@ -441,7 +874,7 @@ class SettingsDialog(QDialog):
             "practice_tempo": self.tempo_slider.value(),
             
             # Connection
-            "port": self.port_input.currentText(),
+            "port": self._get_actual_connection_port(),  # Save actual COM port, not display text
             "baud_rate": int(self.baud_combo.currentText()),
             "auto_reconnect": self.auto_reconnect.isChecked(),
             
@@ -450,6 +883,6 @@ class SettingsDialog(QDialog):
             "leds_per_key": self.leds_per_key.value(),
             "led_brightness": self.led_brightness.value(),
             "led_color_mode": self.led_color_mode.currentText(),
-            "ledteacher_port": self.ledteacher_port.currentText(),
+            "ledteacher_port": self._get_actual_ledteacher_port(),  # Save actual COM port, not display text
             "ledteacher_baud": int(self.ledteacher_baud.currentText())
         }

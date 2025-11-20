@@ -4,13 +4,16 @@ A Python application that acts as a piano teacher, connecting to an Arduino via 
 
 ## Features
 - **Professional Score View**: Interactive musical staff with real-time note highlighting using Bravura font.
+- **Automatic Timing Synchronization**: AI-powered system that measures and adjusts audio-visual sync in real-time.
+- **Widget-Based Notes**: 6 musical figure types (whole, half, quarter, eighth, sixteenth, thirtysecond) with precise rendering.
+- **Grand Piano Synthesis**: Professional piano sound with 12 harmonics, inharmonicity modeling, and multi-string chorus.
 - **Arduino Connection**: Connects to your digital piano or Arduino interface via USB.
 - **Teaching Modes**:
     - **Master (Maestro)**: Displays the score and plays automatically - just watch and learn.
     - **Student (Estudiante)**: The program plays 4 chords, then you repeat them - call and response training.
     - **Practice (Práctica)**: Keys light up on the piano, you press them to advance - guided step-by-step.
     - **Corrector (Errores)**: Reviews your previous mistakes and makes you correct them - focused improvement.
-- **Configurable Audio**: Supports different piano sounds (Classic, Electric, Organ) using SoundFonts.
+- **High-Quality Audio**: Maestro Concert Grand Piano samples (440 samples, 88 notes) with EQ, compression, and reverb.
 
 ## Requirements
 - Python 3.8+
@@ -39,6 +42,39 @@ python main.py
 - If `verovio` fails to load, ensure the python package is installed correctly.
 - If audio is silent, check if `fluidsynth` is installed and a SoundFont is present.
 
+## Automatic Timing Synchronization
+
+The application includes an intelligent timing synchronization system that automatically maintains perfect sync between audio and visuals:
+
+### How It Works
+1. **Measurement**: Records timing data for every note played (scheduled time vs actual time)
+2. **Analysis**: Calculates statistical offset using median and standard deviation
+3. **Adjustment**: Automatically adjusts audio latency compensation when drift exceeds 3ms
+4. **Adaptation**: Continuously refines sync over time for rock-solid accuracy
+
+### Features
+- **Tolerance**: Notes activate within 8ms (sub-frame precision at 60 FPS)
+- **Auto-correction**: Adjusts every ~1 second if needed
+- **Statistics tracking**: Mean, median, std dev of timing offsets
+- **Manual override**: Set custom latency if needed
+
+### Accessing Sync Stats
+The `StaffWidget` provides methods to inspect synchronization:
+```python
+# Print sync statistics
+staff_widget.print_sync_stats()
+
+# Get statistics dict
+stats = staff_widget.get_sync_statistics()
+
+# Manual control
+staff_widget.set_manual_latency(15.0)  # 15ms
+staff_widget.enable_sync_system()
+staff_widget.disable_sync_system()
+staff_widget.reset_sync_system()
+```
+
+---
 
 Sistema de iluminación LED sincronizado con archivos MIDI, similar a Keysnake, diseñado para **Raspberry Pi Zero W/W2**.
 

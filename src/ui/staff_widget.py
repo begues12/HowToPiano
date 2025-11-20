@@ -1,6 +1,8 @@
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QFontDatabase
+from src.ui.note_widget import NoteWidget, SongWidget, NoteType
+from src.core.timing_sync import TimingSyncManager
 import mido
 import os
 import time
@@ -37,8 +39,8 @@ class StaffWidget(QWidget):
         self.active_note_ids = set()  # IDs of notes currently being played
         self.played_note_color = QColor(30, 144, 255)  # Dodger blue (professional highlight)
         self.active_chord_id = None  # Currently active chord group
-        self.current_time = -3  # Current playback time in seconds
-        self.scroll_offset = 0  # Horizontal scroll position
+        self.current_time = -3  # Current playback time in seconds (will be set to -preparation_time on load)
+        self.scroll_offset = 0  # DEPRECATED: No longer used in new coordinate system
         
         # Staff parameters
         self.base_staff_spacing = 15  # Base pixels between staff lines (at 100% zoom)
@@ -55,6 +57,16 @@ class StaffWidget(QWidget):
         # This determines how far ahead of the red line the first note appears
         # distance = preparation_time * pixels_per_second (e.g., 3s * 100px/s = 300px)
         self.preparation_time = 3.0  # Default - will be overridden by settings
+        
+        # Audio latency compensation with automatic sync management
+        # This ensures notes visually arrive at the red line EXACTLY when they sound
+        self.audio_latency_ms = 12  # Initial milliseconds
+        self.audio_latency_sec = self.audio_latency_ms / 1000.0  # Convert to seconds
+        
+        # NEW: Automatic timing synchronization system
+        self.timing_sync = TimingSyncManager(initial_latency=self.audio_latency_sec)
+        self.sync_check_interval = 60  # Check every 60 frames (~1 second at 60fps)
+        self.sync_check_counter = 0
         
         # Countdown state
         self.countdown_active = False
@@ -104,6 +116,11 @@ class StaffWidget(QWidget):
         self.min_note_spacing = 60  # Base horizontal space between notes (will be scaled)
         self.use_proportional_spacing = True  # Use duration-based spacing
         self.chord_stack_offset = 2  # Minimal offset for chord notes (scaled by zoom)
+        
+        # NEW: SongWidget for advanced note management
+        self.song_widget = SongWidget(tempo=self.tempo_bpm, time_signature=self.time_signature)
+        self.song_widget.note_triggered.connect(self._on_note_triggered)
+        self.song_widget.note_ended.connect(self._on_note_ended)
         
     def export_midi_notes_to_txt(self, midi_path, output_path):
         """Export all notes from MIDI to TXT file with T and pitch"""
@@ -357,6 +374,9 @@ class StaffWidget(QWidget):
             # Assign fingers based on note positions
             self._assign_fingers_to_notes()
             
+            # NEW: Convert to NoteWidget system
+            self._convert_notes_to_widgets()
+            
             self.update()
             return True
             
@@ -582,6 +602,74 @@ class StaffWidget(QWidget):
         
         self.update()
     
+    def _convert_notes_to_widgets(self):
+        """
+        Convert old-style dict notes to new NoteWidget system.
+        Called after load_midi_notes() to populate song_widget.
+        """
+        self.song_widget.clear_notes()
+        
+        for note_dict in self.notes:
+            # Determine note type based on duration
+            duration = note_dict['duration']
+            
+            # Calculate beats (assuming 4/4 time and 120 BPM as base)
+            beats = duration * (self.tempo_bpm / 60.0)
+            
+            # Map duration to note type
+            if beats >= 3.5:
+                note_type = NoteType.WHOLE
+            elif beats >= 1.75:
+                note_type = NoteType.HALF
+            elif beats >= 0.875:
+                note_type = NoteType.QUARTER
+            elif beats >= 0.4375:
+                note_type = NoteType.EIGHTH
+            elif beats >= 0.21875:
+                note_type = NoteType.SIXTEENTH
+            else:
+                note_type = NoteType.THIRTYSECOND
+            
+            # Create NoteWidget
+            note_widget = NoteWidget(
+                pitch=note_dict['pitch'],
+                start_time=note_dict['time'],
+                duration=duration,
+                velocity=80,  # Default velocity
+                note_type=note_type
+            )
+            
+            # Copy finger assignment if exists
+            # DISABLED: User doesn't want finger numbers displayed
+            # if note_dict['id'] in self.note_fingers:
+            #     note_widget.finger = self.note_fingers[note_dict['id']]
+            
+            # Store original note_id for tracking
+            note_widget._old_id = note_dict['id']
+            
+            self.song_widget.add_note(note_widget)
+        
+        print(f"StaffWidget: Converted {len(self.notes)} notes to NoteWidget system")
+    
+    def _on_note_triggered(self, pitch, velocity):
+        """Callback when a note should start playing (from SongWidget)"""
+        # Find the note that was triggered for timing measurement
+        for note_widget in self.song_widget.notes:
+            if note_widget.pitch == pitch and note_widget.is_played:
+                # Record timing for synchronization
+                self.timing_sync.record_note_timing(
+                    scheduled_time=note_widget.start_time,
+                    actual_time=time.time(),
+                    visual_time=self.current_time
+                )
+                break
+        
+        self.note_triggered.emit(pitch, velocity)
+    
+    def _on_note_ended(self, pitch):
+        """Callback when a note should stop playing (from SongWidget)"""
+        self.note_ended.emit(pitch)
+    
     def _check_and_trigger_notes(self, current_time):
         """
         TIME-BASED NOTE TRIGGER SYSTEM
@@ -590,12 +678,19 @@ class StaffWidget(QWidget):
         No visual position calculations - pure time synchronization.
         
         Formula: Trigger when current_time >= note_time
+        
+        IMPORTANT: Compensates for audio buffer latency (~12ms) so notes
+        are triggered slightly EARLY to arrive at speakers precisely on beat.
         """
         if not self.notes:
             return
         
         # Tolerance for timing (50ms window to catch notes)
         trigger_tolerance = 0.050
+        
+        # CRITICAL: Pre-trigger notes by audio latency amount
+        # This ensures sound arrives at speakers EXACTLY when note crosses red line
+        trigger_time = current_time + self.audio_latency_sec
         
         for note in self.notes:
             note_id = note['id']
@@ -614,28 +709,29 @@ class StaffWidget(QWidget):
                 continue
             
             # === NOTE ON LOGIC ===
-            # Trigger when current time reaches note time
-            if (note_time <= current_time <= note_time + trigger_tolerance and
+            # Trigger when current time + latency reaches note time
+            # This pre-triggers the note so it sounds EXACTLY when crossing red line
+            if (note_time <= trigger_time <= note_time + trigger_tolerance and
                 note_id not in self.triggered_notes):
                 
                 # Mark as triggered
                 self.triggered_notes.add(note_id)
                 
-                # Play sound
+                # Play sound (will reach speakers in ~12ms, perfectly synced with visual)
                 velocity = 80
                 self.note_triggered.emit(note['pitch'], velocity)
                 
                 # Log to real-time playback file if enabled
                 if self.playback_logging_enabled and self.playback_log_file:
                     try:
-                        self.playback_log_file.write(f"NOTE_ON | T={current_time:.4f}s | Pitch={note['pitch']} | Scheduled={note_time:.4f}s | Diff={(current_time-note_time)*1000:.1f}ms\n")
+                        self.playback_log_file.write(f"NOTE_ON | T={current_time:.4f}s | Pitch={note['pitch']} | Scheduled={note_time:.4f}s | PreTrigger={self.audio_latency_ms}ms | Diff={(trigger_time-note_time)*1000:.1f}ms\n")
                         self.playback_log_file.flush()
                     except:
                         pass
             
             # === NOTE OFF LOGIC ===
-            # End note when duration expires
-            elif (current_time >= note_end_time and
+            # End note when duration expires (also pre-trigger by latency)
+            elif (trigger_time >= note_end_time and
                   note_id in self.triggered_notes):
                 
                 # Stop sound
@@ -700,17 +796,33 @@ class StaffWidget(QWidget):
         self.update()
     
     def set_playback_time(self, time_sec):
-        """Update current playback time and auto-scroll"""
+        """
+        Update current playback time.
+        
+        NEW SYSTEM: Línea roja = T₀ (fixed position)
+        - Notes are positioned relative to current_time
+        - No scroll_offset needed, everything is time-relative
+        """
         old_time = self.current_time
         self.current_time = time_sec
         
-        target_x = (time_sec + self.preparation_time) * self.pixels_per_second
-        playback_line_x = self.left_margin + (50 * self.visual_zoom_scale)  # Position of red line, scaled
-        old_scroll = self.scroll_offset
-        self.scroll_offset = target_x - playback_line_x
-        self.scroll_offset = max(0, self.scroll_offset)
-        self._check_and_trigger_notes(time_sec)
-        if abs(self.scroll_offset - old_scroll) > 0.5 or abs(time_sec - old_time) > 0.01:
+        # Apply automatic timing adjustments periodically
+        self.sync_check_counter += 1
+        if self.sync_check_counter >= self.sync_check_interval:
+            self.sync_check_counter = 0
+            adjustment_stats = self.timing_sync.apply_adjustment()
+            if adjustment_stats:
+                # Update our latency with the new synchronized value
+                self.audio_latency_sec = self.timing_sync.get_current_latency()
+                self.audio_latency_ms = self.audio_latency_sec * 1000.0
+        
+        # Trigger notes that should play now
+        # Use slightly ahead time for audio compensation
+        trigger_time = time_sec + self.audio_latency_sec
+        self.song_widget.check_and_trigger_notes(trigger_time)
+        
+        # Update display if time changed significantly
+        if abs(time_sec - old_time) > 0.01:
             self.update()
     
     def note_on(self, pitch):
@@ -769,6 +881,9 @@ class StaffWidget(QWidget):
             
             # Draw bar lines (measures)
             self.draw_barlines(painter)
+            
+            # NEW: Draw notes using NoteWidget system
+            self.draw_notes(painter)
             
             # Draw playback cursor
             self.draw_cursor(painter)
@@ -998,21 +1113,30 @@ class StaffWidget(QWidget):
             beats_per_measure = self.time_signature[0]
             measure_duration = (beats_per_measure / self.tempo_bpm) * 60
             
-            # Draw initial barline at the start (thicker, professional)
-            initial_x = self.left_margin - self.scroll_offset
-            if initial_x >= self.left_margin - 10:
+            # NEW SYSTEM: Use time-relative positioning
+            red_line_x = self.left_margin + (50 * self.visual_zoom_scale)
+            
+            # Draw initial barline at T=0 (thicker, professional)
+            initial_time = 0.0
+            initial_x = red_line_x + (initial_time - self.current_time) * self.pixels_per_second
+            if initial_x >= self.left_margin - 10 and initial_x <= self.width():
                 painter.setPen(QPen(QColor(20, 20, 20), 2.5 * self.visual_zoom_scale))
                 painter.drawLine(int(initial_x), int(treble_top), int(initial_x), int(bass_bottom))
             
             # Draw regular barlines with subtle shading
             painter.setPen(QPen(QColor(60, 60, 60), 1.3 * self.visual_zoom_scale))
-            start_time = measure_duration
-            max_time = (self.scroll_offset + self.width() - self.left_margin) / self.pixels_per_second
             
-            current_time = measure_duration
-            measure_count = 1
-            while current_time <= max_time:
-                x = self.left_margin + (current_time * self.pixels_per_second) - self.scroll_offset
+            # Calculate visible time range
+            time_range_left = self.current_time - (red_line_x / self.pixels_per_second)
+            time_range_right = self.current_time + ((self.width() - red_line_x) / self.pixels_per_second)
+            
+            # Start from first measure before visible area
+            start_measure = max(1, int(time_range_left / measure_duration))
+            current_time = start_measure * measure_duration
+            measure_count = start_measure
+            
+            while current_time <= time_range_right + measure_duration:
+                x = red_line_x + (current_time - self.current_time) * self.pixels_per_second
                 
                 if x >= self.left_margin and x <= self.width():
                     # Subtle alternating measure shading for better readability
@@ -1031,10 +1155,11 @@ class StaffWidget(QWidget):
                 current_time += measure_duration
                 measure_count += 1
             
-            # Draw final barline if we have notes
+            # Draw final barline if we have notes (using new coordinate system)
             if self.notes:
                 last_note_time = max(note['time'] + note['duration'] for note in self.notes)
-                final_x = self.left_margin + ((last_note_time + 1) * self.pixels_per_second) - self.scroll_offset
+                final_time = last_note_time + 1
+                final_x = red_line_x + (final_time - self.current_time) * self.pixels_per_second
                 
                 if final_x >= self.left_margin and final_x <= self.width() + 100:
                     # Double barline for end (professional finish)
@@ -1044,7 +1169,7 @@ class StaffWidget(QWidget):
                     painter.drawLine(int(final_x + 6 * self.visual_zoom_scale), int(treble_top), 
                                    int(final_x + 6 * self.visual_zoom_scale), int(bass_bottom))
         else:
-            # Single staff barlines
+            # Single staff barlines (NEW COORDINATE SYSTEM)
             staff_center_y = self.height() / 2
             top_y = staff_center_y - (2 * self.staff_spacing)
             bottom_y = staff_center_y + (2 * self.staff_spacing)
@@ -1052,20 +1177,27 @@ class StaffWidget(QWidget):
             beats_per_measure = self.time_signature[0]
             measure_duration = (beats_per_measure / self.tempo_bpm) * 60
             
-            # Initial barline
-            initial_x = self.left_margin - self.scroll_offset
-            if initial_x >= self.left_margin - 10:
+            red_line_x = self.left_margin + (50 * self.visual_zoom_scale)
+            
+            # Initial barline at T=0
+            initial_time = 0.0
+            initial_x = red_line_x + (initial_time - self.current_time) * self.pixels_per_second
+            if initial_x >= self.left_margin - 10 and initial_x <= self.width():
                 painter.setPen(QPen(QColor(0, 0, 0), 2 * self.visual_zoom_scale))
                 painter.drawLine(int(initial_x), int(top_y), int(initial_x), int(bottom_y))
             
             # Regular barlines
             painter.setPen(QPen(QColor(0, 0, 0), 1.5 * self.visual_zoom_scale))
-            start_time = measure_duration
-            max_time = (self.scroll_offset + self.width() - self.left_margin) / self.pixels_per_second
             
-            current_time = measure_duration
-            while current_time <= max_time:
-                x = self.left_margin + (current_time * self.pixels_per_second) - self.scroll_offset
+            # Calculate visible time range
+            time_range_left = self.current_time - (red_line_x / self.pixels_per_second)
+            time_range_right = self.current_time + ((self.width() - red_line_x) / self.pixels_per_second)
+            
+            start_measure = max(1, int(time_range_left / measure_duration))
+            current_time = start_measure * measure_duration
+            
+            while current_time <= time_range_right + measure_duration:
+                x = red_line_x + (current_time - self.current_time) * self.pixels_per_second
                 
                 if x >= self.left_margin and x <= self.width():
                     painter.drawLine(int(x), int(top_y), int(x), int(bottom_y))
@@ -1075,13 +1207,79 @@ class StaffWidget(QWidget):
             # Final barline
             if self.notes:
                 last_note_time = max(note['time'] + note['duration'] for note in self.notes)
-                final_x = self.left_margin + ((last_note_time + 1) * self.pixels_per_second) - self.scroll_offset
+                final_time = last_note_time + 1
+                final_x = red_line_x + (final_time - self.current_time) * self.pixels_per_second
                 
                 if final_x >= self.left_margin and final_x <= self.width() + 100:
                     painter.setPen(QPen(QColor(0, 0, 0), 1.5 * self.visual_zoom_scale))
                     painter.drawLine(int(final_x), int(top_y), int(final_x), int(bottom_y))
                     painter.setPen(QPen(QColor(0, 0, 0), 4 * self.visual_zoom_scale))
                     painter.drawLine(int(final_x + 5), int(top_y), int(final_x + 5), int(bottom_y))
+    
+    def draw_notes(self, painter):
+        """
+        Draw all notes using the NoteWidget system.
+        Each NoteWidget handles its own rendering logic.
+        """
+        if not self.song_widget.notes:
+            return
+        
+        # Calculate viewport bounds for culling
+        viewport_left = self.left_margin
+        viewport_right = self.width()
+        
+        # Get staff center positions for grand staff
+        if self.clef_type == "grand":
+            staff_gap = 3 * self.staff_spacing
+            total_staff_height = 8 * self.staff_spacing + staff_gap
+            treble_center_y = (self.height() - total_staff_height) / 2 + 2 * self.staff_spacing
+            bass_center_y = treble_center_y + 4 * self.staff_spacing + staff_gap
+        else:
+            staff_center_y = self.height() / 2
+        
+        # Red line position (fixed)
+        red_line_x = self.left_margin + (50 * self.visual_zoom_scale)
+        
+        # OPTIMIZACIÓN: Calcular rango de tiempo visible
+        time_range_left = self.current_time - (red_line_x / self.pixels_per_second) - 1.0
+        time_range_right = self.current_time + ((viewport_right - red_line_x) / self.pixels_per_second) + 1.0
+        
+        # Contadores para debug
+        total_notes = len(self.song_widget.notes)
+        rendered_count = 0
+        
+        # Draw each note (OPTIMIZADO: solo revisar notas en rango visible)
+        for note_widget in self.song_widget.notes:
+            # EARLY CULLING: Saltar notas fuera del rango temporal visible
+            if note_widget.start_time < time_range_left or note_widget.start_time > time_range_right:
+                continue
+            
+            # Calculate X position relative to current time
+            # Formula: red_line + (note_time - current_time) * pixels_per_second
+            time_offset = note_widget.start_time - self.current_time
+            note_x = red_line_x + (time_offset * self.pixels_per_second)
+            
+            # Calculate Y position (vertical, based on pitch)
+            note_y = self.pitch_to_y(note_widget.pitch)
+            
+            # Check if note is visible (spatial culling)
+            if not note_widget.is_visible(note_x, viewport_left, viewport_right):
+                continue
+            
+            rendered_count += 1
+            
+            # Determine color based on state
+            if note_widget.is_played:
+                note_color = self.played_note_color  # Blue for played notes
+            elif note_widget.is_correct is True:
+                note_color = QColor(0, 255, 0, 180)  # Green for correct
+            elif note_widget.is_correct is False:
+                note_color = QColor(255, 0, 0, 180)  # Red for incorrect
+            else:
+                note_color = QColor(138, 43, 226, 200)  # Purple (default)
+            
+            # Render the note
+            note_widget.render(painter, note_x, note_y, note_color)
     
     def draw_beams(self, painter):
         """Draw beams connecting eighth and sixteenth notes with proper slope"""
@@ -1586,13 +1784,14 @@ class StaffWidget(QWidget):
         # Calculate current measure boundaries
         beats_per_measure = self.time_signature[0]
         measure_duration = (beats_per_measure / self.tempo_bpm) * 60
-        current_measure = int(self.current_time / measure_duration)
+        current_measure = int(self.current_time / measure_duration) if self.current_time >= 0 else -1
         measure_start_time = current_measure * measure_duration
         measure_end_time = (current_measure + 1) * measure_duration
         
-        # Draw subtle highlight for current measure
-        measure_start_x = self.left_margin + (measure_start_time * self.pixels_per_second) - self.scroll_offset
-        measure_end_x = self.left_margin + (measure_end_time * self.pixels_per_second) - self.scroll_offset
+        # Draw subtle highlight for current measure (using new coordinate system)
+        red_line_x = self.left_margin + (50 * self.visual_zoom_scale)
+        measure_start_x = red_line_x + (measure_start_time - self.current_time) * self.pixels_per_second
+        measure_end_x = red_line_x + (measure_end_time - self.current_time) * self.pixels_per_second
         
         if measure_start_x < self.width() and measure_end_x > self.left_margin:
             painter.fillRect(int(max(measure_start_x, self.left_margin)), int(treble_top - 10),
@@ -1630,14 +1829,22 @@ class StaffWidget(QWidget):
                     painter.drawEllipse(int(note_visual_x - 3), int(note_y - 3), 6, 6)
     
     def draw_time_labels(self, painter):
-        """Draw time markers"""
+        """Draw time markers (NEW COORDINATE SYSTEM)"""
         painter.setPen(QPen(QColor("gray"), 1))
         painter.setFont(QFont("Arial", 10))
         
-        # Draw time markers every second (accounting for preparation offset)
-        start_time = -self.preparation_time
-        for i in range(int(start_time), int(self.current_time) + 20):
-            x = ((i + self.preparation_time) * self.pixels_per_second) - self.scroll_offset
+        red_line_x = self.left_margin + (50 * self.visual_zoom_scale)
+        
+        # Calculate visible time range
+        time_range_left = self.current_time - (red_line_x / self.pixels_per_second)
+        time_range_right = self.current_time + ((self.width() - red_line_x) / self.pixels_per_second)
+        
+        # Draw time markers every second
+        start_second = int(time_range_left) - 1
+        end_second = int(time_range_right) + 1
+        
+        for i in range(start_second, end_second + 1):
+            x = red_line_x + (i - self.current_time) * self.pixels_per_second
             if self.left_margin <= x <= self.width():
                 painter.drawText(int(x + 5), 20, f"{i}s")
     
@@ -1659,3 +1866,57 @@ class StaffWidget(QWidget):
         y = (self.height() + text_rect.height()) // 2
         
         painter.drawText(x, y, text)
+    
+    # ========== TIMING SYNCHRONIZATION METHODS ==========
+    
+    def get_sync_statistics(self) -> dict:
+        """
+        Retorna estadísticas del sistema de sincronización.
+        
+        Returns:
+            Diccionario con estadísticas de sincronización
+        """
+        return self.timing_sync.get_statistics()
+    
+    def print_sync_stats(self):
+        """Imprime estadísticas de sincronización en consola"""
+        stats = self.get_sync_statistics()
+        print("\n" + "="*60)
+        print("🎵 TIMING SYNCHRONIZATION STATISTICS")
+        print("="*60)
+        print(f"Status: {'✅ Enabled' if stats['enabled'] else '❌ Disabled'}")
+        print(f"Current Latency: {stats['current_latency_ms']:.2f}ms")
+        print(f"Total Notes Measured: {stats['total_notes']}")
+        print(f"Adjustments Made: {stats['adjustments']}")
+        
+        if stats['samples'] > 0:
+            print(f"\nRecent Samples: {stats['samples']}")
+            print(f"Mean Offset: {stats['mean_offset_ms']:.2f}ms")
+            print(f"Median Offset: {stats['median_offset_ms']:.2f}ms")
+            print(f"Std Deviation: {stats['stdev_offset_ms']:.2f}ms")
+            print(f"Min Offset: {stats['min_offset_ms']:.2f}ms")
+            print(f"Max Offset: {stats['max_offset_ms']:.2f}ms")
+        print("="*60 + "\n")
+    
+    def reset_sync_system(self):
+        """Reinicia el sistema de sincronización"""
+        self.timing_sync.reset()
+    
+    def enable_sync_system(self):
+        """Activa el sistema de sincronización automática"""
+        self.timing_sync.enable()
+    
+    def disable_sync_system(self):
+        """Desactiva el sistema de sincronización automática"""
+        self.timing_sync.disable()
+    
+    def set_manual_latency(self, latency_ms: float):
+        """
+        Establece manualmente la latencia de audio.
+        
+        Args:
+            latency_ms: Latencia en milisegundos
+        """
+        self.timing_sync.set_latency(latency_ms / 1000.0)
+        self.audio_latency_sec = self.timing_sync.get_current_latency()
+        self.audio_latency_ms = self.audio_latency_sec * 1000.0

@@ -682,3 +682,34 @@ class MidiEngine(QObject):
             'time': time_occurred
         })
         print(f"Mistake recorded: played {note}, expected {expected_note}")
+    
+    def cleanup(self):
+        """Clean up resources before shutdown"""
+        try:
+            # Stop timer
+            if hasattr(self, 'timer') and self.timer:
+                self.timer.stop()
+            
+            # Stop all playing notes
+            if hasattr(self, 'synth') and self.synth:
+                for note in range(128):
+                    try:
+                        self.synth.note_off(note)
+                    except:
+                        pass
+            
+            # Clear pygame sounds
+            if hasattr(self, 'active_sounds'):
+                for sound in self.active_sounds.values():
+                    try:
+                        sound.stop()
+                    except:
+                        pass
+                self.active_sounds.clear()
+            
+            # Reset state
+            self.is_playing = False
+            self.is_paused = False
+            
+        except Exception as e:
+            print(f"Error in MidiEngine cleanup: {e}")

@@ -48,3 +48,23 @@ class PianoSynth:
     def set_instrument(self, program, channel=0):
         if self.fs:
             self.fs.program_change(channel, program)
+    
+    def all_notes_off(self):
+        """Stop all currently playing notes"""
+        if self.fs:
+            for channel in range(16):  # MIDI has 16 channels
+                for note in range(128):  # MIDI notes 0-127
+                    try:
+                        self.fs.noteoff(channel, note)
+                    except:
+                        pass
+    
+    def cleanup(self):
+        """Clean up resources before shutdown"""
+        try:
+            if self.fs:
+                self.all_notes_off()
+                # FluidSynth cleanup is automatic on object deletion
+                self.fs = None
+        except Exception as e:
+            print(f"Error in PianoSynth cleanup: {e}")

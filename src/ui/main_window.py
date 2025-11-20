@@ -1208,10 +1208,36 @@ class MainWindow(QMainWindow):
             print(f"Error saving settings: {e}")
     
     def closeEvent(self, event):
-        # Save settings before closing
-        self.save_settings()
+        """Clean shutdown of all components"""
+        print("🛑 Cerrando aplicación...")
         
-        self.arduino.stop()
-        self.arduino_thread.quit()
-        self.arduino_thread.wait()
-        event.accept()
+        try:
+            # 1. Stop MIDI playback
+            if hasattr(self, 'midi_engine') and self.midi_engine:
+                print("  - Deteniendo MIDI engine...")
+                self.midi_engine.stop()
+                self.midi_engine.cleanup()
+            
+            # 2. Stop all audio
+            if hasattr(self, 'synth') and self.synth:
+                print("  - Deteniendo sintetizador...")
+                self.synth.all_notes_off()
+                self.synth.cleanup()
+            
+            # 3. Stop Arduino thread
+            if hasattr(self, 'arduino') and self.arduino:
+                print("  - Deteniendo Arduino...")
+                self.arduino.stop()
+            
+            if hasattr(self, 'arduino_thread') and self.arduino_thread:
+                self.arduino_thread.quit()
+                self.arduino_thread.wait(1000)  # Wait max 1 second
+            
+            # 4. Save settings
+            self.save_settings()
+            print("✅ Aplicación cerrada correctamente")
+            
+        except Exception as e:
+            print(f"⚠️ Error al cerrar: {e}")
+        finally:
+            event.accept()
