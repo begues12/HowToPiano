@@ -134,6 +134,12 @@ class MasterMode(TrainingMode):
     def start(self):
         """Start automatic playback"""
         self.is_active = True
+        # CRITICAL FIX: Adjust start_time so that elapsed time begins at -preparation_time
+        # This means: at time.time() = T, we want adjusted_time = -preparation_time
+        # adjusted_time = (time.time() - start_time) * tempo_multiplier - preparation_time
+        # -preparation_time = (T - start_time) * tempo_multiplier - preparation_time
+        # 0 = (T - start_time) * tempo_multiplier
+        # start_time = T (which is correct - we just subtract prep_time in tick())
         self.start_time = time.time()
         self.current_event_index = 0
         
@@ -153,6 +159,19 @@ class MasterMode(TrainingMode):
         # Calculate current playback time with tempo multiplier
         real_elapsed = time.time() - self.start_time
         adjusted_time = real_elapsed * self.tempo_multiplier
+        
+        # CRITICAL: Subtract preparation time so time starts at negative value
+        # At t=0s real: adjusted_time = 0 - 3 = -3
+        # At t=3s real: adjusted_time = 3 - 3 = 0 (notes start playing)
+        preparation_time = getattr(self.staff_widget, 'preparation_time', 3.0)
+        adjusted_time -= preparation_time
+        
+        # Log every second to track timing (disabled for production)
+        # if not hasattr(self, '_last_tick_log'):
+        #     self._last_tick_log = -999
+        # if abs(adjusted_time - self._last_tick_log) >= 1.0:
+        #     print(f"[MASTER] tick: real_elapsed={real_elapsed:.3f}s, adjusted_time={adjusted_time:.3f}s, prep={preparation_time}s")
+        #     self._last_tick_log = adjusted_time
         
         # Update staff position (staff will trigger notes when they cross red line)
         self.playback_update.emit(adjusted_time)

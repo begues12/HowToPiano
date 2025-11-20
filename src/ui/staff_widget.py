@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QFontDatabase
 import mido
 import os
+import time
 
 class StaffWidget(QWidget):
     """Interactive musical staff that displays and highlights notes during playback"""
@@ -45,9 +46,10 @@ class StaffWidget(QWidget):
         self.visual_zoom_scale = 1.0  # Visual zoom multiplier (1.0 = 100%)
         self.top_margin = 100  # Professional spacing for tempo marking
         self.bottom_margin = 60  # Balanced bottom margin
-        self.base_left_margin = 220  # Increased for clef + key signature + time signature
-        self.left_margin = 220  # Current space for fixed clef (scaled by zoom)
-        self.pixels_per_second = 100  # FIXED scrolling speed
+        self.base_left_margin = 160  # Space for clef + key signature + time signature
+        self.left_margin = 160  # Current space for fixed clef (scaled by zoom)
+        self.base_pixels_per_second = 100  # Base scrolling speed at 120 BPM
+        self.pixels_per_second = 100  # Actual scrolling speed (adjusted by tempo)
         
         # Preparation time - controlled by settings.json (default 3 seconds)
         # This determines how far ahead of the red line the first note appears
@@ -95,7 +97,7 @@ class StaffWidget(QWidget):
         self.composer = ""  # Composer/author name
         
         # Spacing improvements for professional layout
-        self.min_note_spacing = 35  # Base horizontal space between notes (will be scaled)
+        self.min_note_spacing = 60  # Base horizontal space between notes (will be scaled)
         self.use_proportional_spacing = True  # Use duration-based spacing
         self.chord_stack_offset = 2  # Minimal offset for chord notes (scaled by zoom)
         
@@ -159,6 +161,15 @@ class StaffWidget(QWidget):
             
             print(f"StaffWidget: '{self.piece_title}' by {self.composer if self.composer else 'Unknown'}")
             print(f"StaffWidget: Tempo = {self.tempo_bpm} BPM ({self.tempo_text}), Time signature = {self.time_signature[0]}/{self.time_signature[1]}")
+            
+            # CRITICAL: Adjust scroll speed based on tempo AND zoom
+            # Base speed is 100 px/s at 120 BPM and 100% zoom (reference)
+            # Formula: pixels_per_second = base * (tempo / 120) * zoom_scale
+            # Fast tempo (180 BPM) -> 150 px/s (faster scroll)
+            # Slow tempo (60 BPM) -> 50 px/s (slower scroll)
+            tempo_factor = self.tempo_bpm / 120.0
+            self.pixels_per_second = self.base_pixels_per_second * tempo_factor * self.visual_zoom_scale
+            print(f"StaffWidget: Scroll speed adjusted to {self.pixels_per_second:.1f} px/s (tempo={self.tempo_bpm}, zoom={self.visual_zoom_scale*100:.0f}%)")
             
             # Combine all tracks into single timeline
             events = []
@@ -272,7 +283,12 @@ class StaffWidget(QWidget):
             if self.use_proportional_spacing:
                 self._apply_proportional_spacing()
             
+            # Log first few notes for debugging (disabled for production)
             print(f"StaffWidget: Loaded {len(self.notes)} notes in {len(self.chords)} chords")
+            # if self.notes:
+            #     print(f"[STAFF] First note: time={self.notes[0]['time']:.3f}s, pitch={self.notes[0]['pitch']}, x={self.notes[0]['x']:.1f}")
+            #     if len(self.notes) > 1:
+            #         print(f"[STAFF] Second note: time={self.notes[1]['time']:.3f}s, pitch={self.notes[1]['pitch']}, x={self.notes[1]['x']:.1f}")
             if len(self.notes) > 0:
                 print(f"StaffWidget: First note at time {self.notes[0]['time']:.2f}s, pitch {self.notes[0]['pitch']}")
                 print(f"StaffWidget: Sample chord sizes: {[len(c['note_ids']) for c in self.chords[:5]]}")
@@ -398,41 +414,31 @@ class StaffWidget(QWidget):
         return None  # No accidental needed for white keys
     
     def _apply_proportional_spacing(self):
-        """Apply proportional spacing to notes based on their durations"""
+        """Apply proportional spacing to notes based on their durations (IMPROVED)"""
         if not self.notes or len(self.notes) < 2:
             return
         
-        print("StaffWidget: Applying proportional spacing...")
+        # IMPROVED: Better spacing algorithm based on musical time
+        # Instead of using multipliers, use actual musical time with a scaling factor
         
-        # Calculate spacing multiplier based on note duration
-        # Standard: quarter note = 1.0, eighth = 0.7, sixteenth = 0.5, half = 1.5, whole = 2.0
-        def get_spacing_multiplier(duration):
-            if duration >= 1.8:  # Whole note
-                return 2.2
-            elif duration >= 0.9:  # Half note
-                return 1.6
-            elif duration >= 0.4:  # Quarter note
-                return 1.0
-            elif duration >= 0.2:  # Eighth note
-                return 0.7
-            else:  # Sixteenth note and faster
-                return 0.5
+        # Time-based spacing: each second of musical time = pixels_per_second pixels
+        # But we add minimum spacing to prevent notes from being too close
         
-        # Recalculate X positions with proportional spacing
-        cumulative_x = (self.notes[0]['time'] + self.preparation_time) * self.pixels_per_second
-        self.notes[0]['x'] = cumulative_x
+        # First note starts at preparation time
+        self.notes[0]['x'] = (self.notes[0]['time'] + self.preparation_time) * self.pixels_per_second
         
-        # Base spacing (minimum distance between notes)
-        base_spacing = self.min_note_spacing * self.visual_zoom_scale
+        # Minimum spacing between notes (prevent overlap)
+        min_spacing = 25 * self.visual_zoom_scale
         
         for i in range(1, len(self.notes)):
             prev_note = self.notes[i - 1]
             current_note = self.notes[i]
             
-            # Time difference between notes
-            time_gap = current_note['time'] - prev_note['time']
+            # Calculate position based on musical time
+            time_based_x = (current_note['time'] + self.preparation_time) * self.pixels_per_second
             
             # Check if this is part of a chord (notes at same time)
+            time_gap = current_note['time'] - prev_note['time']
             is_chord = abs(time_gap) < 0.02  # 20ms tolerance
             
             if is_chord:
@@ -440,20 +446,14 @@ class StaffWidget(QWidget):
                 # Slight offset based on pitch to avoid complete overlap
                 pitch_diff = abs(current_note['pitch'] - prev_note['pitch'])
                 chord_offset = min(pitch_diff * 0.5, 3) * self.visual_zoom_scale
-                cumulative_x = prev_note['x'] + chord_offset
+                current_note['x'] = prev_note['x'] + chord_offset
             else:
-                # Calculate spacing based on previous note's duration
-                prev_duration = prev_note['duration']
-                spacing_multiplier = get_spacing_multiplier(prev_duration)
+                # Use time-based position, but ensure minimum spacing
+                # This respects the tempo-adjusted pixels_per_second
+                min_allowed_x = prev_note['x'] + min_spacing
                 
-                # Additional spacing for time gap (but not too much)
-                time_spacing = min(time_gap * self.pixels_per_second * 0.3, base_spacing * 2)
-                
-                # Total spacing: base + proportional + time gap
-                total_spacing = base_spacing * spacing_multiplier + time_spacing
-                cumulative_x = prev_note['x'] + total_spacing
-            
-            current_note['x'] = cumulative_x
+                # Use the greater of: time-based position OR minimum spacing position
+                current_note['x'] = max(time_based_x, min_allowed_x)
         
         print(f"StaffWidget: Proportional spacing applied to {len(self.notes)} notes")
     
@@ -567,7 +567,7 @@ class StaffWidget(QWidget):
         self.update()
     
     def _check_and_trigger_notes(self, current_time):
-        """Check if any notes are crossing the red line and trigger them"""
+        """Check if any notes are crossing the red line and trigger them (OPTIMIZED)"""
         if not self.notes:
             return
         
@@ -575,34 +575,43 @@ class StaffWidget(QWidget):
         # Notes need to "travel" visually before reaching the red line
         # Only start triggering when current_time >= 0
         if current_time < -0.01:  # Allow small tolerance for floating point
-            return
+            return  # Skip logging during prep phase - too verbose
         
-        # Visual positions:
-        # - Note X position: left_margin + (note_time + preparation_time) * pixels_per_second - scroll_offset
-        # - Red line X position: left_margin + 50
-        # - Scroll offset: (current_time + preparation_time) * pixels_per_second - 50
-        #
-        # Substituting:
-        # note_x = left_margin + (note_time + preparation_time) * pixels_per_second - [(current_time + preparation_time) * pixels_per_second - 50]
-        # note_x = left_margin + 50 + (note_time - current_time) * pixels_per_second
-        #
-        # For note to be AT red line: note_x = red_line_x
-        # left_margin + 50 + (note_time - current_time) * pixels_per_second = left_margin + 50
-        # (note_time - current_time) * pixels_per_second = 0
-        # note_time = current_time ✓
+        # OPTIMIZATION: Track current index to avoid checking old notes
+        if not hasattr(self, '_trigger_check_index'):
+            self._trigger_check_index = 0
         
-        trigger_tolerance = 0.05  # 50ms tolerance for timing precision
+        # CRITICAL: Use asymmetric tolerance
+        # - Allow triggering AFTER the note time (late forgiveness: 100ms)
+        # - Do NOT allow triggering BEFORE the note time (early rejection)
+        trigger_after_tolerance = 0.10  # Can trigger up to 100ms late
         
-        # Check each note
-        for note in self.notes:
+        # OPTIMIZATION: Only check notes near current time (skip notes far in past/future)
+        # Start from last checked index, notes are sorted by time
+        start_idx = self._trigger_check_index
+        end_time_window = current_time + trigger_after_tolerance
+        
+        # Check notes starting from last position
+        for i in range(start_idx, len(self.notes)):
+            note = self.notes[i]
             note_time = note['time']
             note_id = note['id']
+            
+            # EARLY EXIT: If note is too far in future, stop checking
+            if note_time > end_time_window:
+                break
+            
+            # Skip notes that are too far in the past (more than 2 seconds ago)
+            if note_time < current_time - 2.0:
+                self._trigger_check_index = i + 1  # Move forward
+                continue
+            
             note_end_time = note_time + note['duration']
             
-            # The note should trigger when current playback time reaches the note's musical time
             # Check if note should start (reaches red line)
-            if (current_time >= note_time - trigger_tolerance and 
-                current_time < note_time + trigger_tolerance and
+            # MUST be: note_time <= current_time < note_time + tolerance
+            if (current_time >= note_time and 
+                current_time < note_time + trigger_after_tolerance and
                 note_id not in self.triggered_notes):
                 
                 # Trigger note ON
@@ -611,7 +620,7 @@ class StaffWidget(QWidget):
                 self.note_triggered.emit(note['pitch'], velocity)
                 
             # Check if note should end
-            elif (current_time >= note_end_time - trigger_tolerance and
+            elif (current_time >= note_end_time and
                   note_id in self.triggered_notes):
                 
                 # Trigger note OFF
@@ -622,6 +631,8 @@ class StaffWidget(QWidget):
         """Reset all triggered notes (call when stopping/restarting playback)"""
         self.triggered_notes.clear()
         self.last_check_time = -1.0
+        # Reset optimization index
+        self._trigger_check_index = 0
     
     def go_to_start(self):
         """Reset to start position with preparation time offset"""
@@ -643,24 +654,42 @@ class StaffWidget(QWidget):
     
     def set_playback_time(self, time_sec):
         """Update current playback time and auto-scroll"""
+        old_time = self.current_time
         self.current_time = time_sec
+        
+        # Log every 0.5 seconds to avoid spam (disabled for production)
+        # if not hasattr(self, '_last_log_time'):
+        #     self._last_log_time = -999
+        # if abs(time_sec - self._last_log_time) >= 0.5:
+        #     print(f"[STAFF] set_playback_time: {time_sec:.3f}s (prep_time={self.preparation_time}s)")
+        #     self._last_log_time = time_sec
         
         # Calculate where notes at this time should appear
         # Notes are positioned at: left_margin + (note_time + preparation_time) * pixels_per_second
         target_x = (time_sec + self.preparation_time) * self.pixels_per_second
         playback_line_x = self.left_margin + (50 * self.visual_zoom_scale)  # Position of red line, scaled
         
-        # Only scroll when time is meaningful (not at start position)
-        # Use 0.1s threshold to keep notes at preparation_time distance during initial frames
-        if time_sec > 0.1:  # Don't scroll during first 100ms
-            self.scroll_offset = target_x - playback_line_x
-            self.scroll_offset = max(0, self.scroll_offset)
-        # else: keep scroll_offset at 0 (set by go_to_start) to show preparation time
+        # CRITICAL FIX: Always calculate scroll, even during negative time (preparation phase)
+        # When time_sec = -3, target_x = 0, so scroll_offset = 0 - playback_line_x (negative, clamped to 0)
+        # When time_sec = 0, target_x = 3*pixels_per_second, scroll_offset increases
+        # This makes notes scroll smoothly from right to left
+        old_scroll = self.scroll_offset
+        self.scroll_offset = target_x - playback_line_x
+        self.scroll_offset = max(0, self.scroll_offset)
         
-        # Check for notes crossing the red line and trigger them
-        self._check_and_trigger_notes(time_sec)
+        # OPTIMIZATION: Only check triggers if significant time has passed (reduce from 60Hz to ~30Hz)
+        if not hasattr(self, '_last_trigger_check'):
+            self._last_trigger_check = -999
         
-        self.update()
+        # Check triggers every 30ms instead of every tick
+        if abs(time_sec - self._last_trigger_check) >= 0.030:
+            self._check_and_trigger_notes(time_sec)
+            self._last_trigger_check = time_sec
+        
+        # Only update if there's a visible change (optimization)
+        # Update if: scroll changed by more than 1px OR time crossed a note boundary
+        if abs(self.scroll_offset - old_scroll) > 0.5 or abs(time_sec - old_time) > 0.01:
+            self.update()
     
     def note_on(self, pitch):
         """Highlight the specific note(s) with this pitch at current time"""
@@ -713,6 +742,18 @@ class StaffWidget(QWidget):
         self.update()
     
     def paintEvent(self, event):
+        # Log paint events to check frequency (disabled for production)
+        # if not hasattr(self, '_paint_count'):
+        #     self._paint_count = 0
+        #     self._paint_start_time = time.time()
+        # self._paint_count += 1
+        # 
+        # # Log paint rate every 60 frames
+        # if self._paint_count % 60 == 0:
+        #     elapsed = time.time() - self._paint_start_time
+        #     fps = self._paint_count / elapsed if elapsed > 0 else 0
+        #     print(f"[STAFF] Paint events: {self._paint_count} in {elapsed:.1f}s ({fps:.1f} FPS)")
+        
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -792,7 +833,7 @@ class StaffWidget(QWidget):
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(pen)
         
-        clef_size = int(85 * self.visual_zoom_scale)  # Slightly larger clefs
+        clef_size = int(55 * self.visual_zoom_scale)  # Appropriately sized clefs
         clef_x = 15 * self.visual_zoom_scale  # Better positioning
         
         if self.clef_type == "grand":
@@ -839,16 +880,16 @@ class StaffWidget(QWidget):
             painter.drawText(int(5), int(brace_y), "\uE000")
             
             # Draw key signature, time signature, and tempo for both staves
-            key_sig_x = clef_x + (70 * self.visual_zoom_scale)
+            key_sig_x = clef_x + (55 * self.visual_zoom_scale)  # Closer to clef
             self.draw_key_signature(painter, key_sig_x, treble_center_y, "treble")
             self.draw_key_signature(painter, key_sig_x, bass_center_y, "bass")
             
-            time_sig_x = key_sig_x + (40 * self.visual_zoom_scale)
+            time_sig_x = key_sig_x + (35 * self.visual_zoom_scale)  # Closer to key sig
             self.draw_time_signature(painter, time_sig_x, treble_center_y)
             self.draw_time_signature(painter, time_sig_x, bass_center_y)
             
-            # Draw tempo indication above treble staff
-            self.draw_tempo_marking(painter, time_sig_x + (50 * self.visual_zoom_scale), treble_center_y - (3 * self.staff_spacing))
+            # Draw tempo indication well above treble staff (doesn't interfere with notes)
+            self.draw_tempo_marking(painter, time_sig_x + (50 * self.visual_zoom_scale), treble_center_y - (5.5 * self.staff_spacing))
             
         else:
             # Single staff mode
@@ -1245,20 +1286,37 @@ class StaffWidget(QWidget):
                 painter.setPen(QPen(QColor(200, 200, 200), 1))
     
     def draw_notes(self, painter):
-        """Draw all notes as ellipses"""
+        """Draw all notes as ellipses (OPTIMIZED)"""
         drawn_count = 0
         remaining_count = 0  # Notes that haven't been played yet
         playback_line_x = self.left_margin + (50 * self.visual_zoom_scale)  # Position of red line, scaled
         
+        # OPTIMIZATION: Pre-calculate commonly used values
+        scroll = self.scroll_offset
+        left_margin = self.left_margin
+        screen_width = self.width() + 50
+        zoom = self.visual_zoom_scale
+        
+        # OPTIMIZATION: Build chord lookup cache once per frame
+        if not hasattr(self, '_chord_cache') or self._chord_cache_frame != id(painter):
+            self._chord_cache = {c['id']: c for c in self.chords}
+            self._chord_cache_frame = id(painter)
+        
         for note in self.notes:
-            note_x = note['x'] - self.scroll_offset
+            note_x = note['x'] - scroll
+            
+            # OPTIMIZATION: Early skip for notes far off screen
+            if note_x < left_margin - 100:
+                continue
+            if note_x > screen_width + 100:
+                break  # Notes are sorted, no need to check further
             
             # Count notes that haven't passed the red line yet
             if note_x >= playback_line_x:
                 remaining_count += 1
             
             # Only draw notes that are visible on screen
-            if note_x >= self.left_margin and note_x <= self.width() + 50:
+            if note_x >= left_margin and note_x <= screen_width:
                 note_y = note['y']
                 note_id = note['id']
                 
@@ -1288,7 +1346,8 @@ class StaffWidget(QWidget):
                 # Draw ledger lines first (if needed)
                 # Adjust ledger width for chord notes
                 chord_id = note.get('chord_id')
-                chord = next((c for c in self.chords if c['id'] == chord_id), None) if chord_id is not None else None
+                # OPTIMIZATION: Use cached chord lookup instead of linear search
+                chord = self._chord_cache.get(chord_id) if chord_id is not None else None
                 is_in_chord = chord and len(chord['note_ids']) > 1
                 
                 ledger_width = (18 if is_in_chord else 15) * self.visual_zoom_scale
@@ -1299,8 +1358,12 @@ class StaffWidget(QWidget):
                 if accidental:
                     self.draw_accidental(painter, note_x, note_y, accidental, color)
                 
-                # Check if note is in a beam group
-                in_beam_group = any(note_id in group for group in self.beam_groups)
+                # OPTIMIZATION: Use cached beam group membership lookup
+                if not hasattr(self, '_beam_note_set'):
+                    self._beam_note_set = set()
+                    for group in self.beam_groups:
+                        self._beam_note_set.update(group)
+                in_beam_group = note_id in self._beam_note_set
                 
                 # For chords, slightly adjust X position for visual clarity
                 adjusted_x = note_x

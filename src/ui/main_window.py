@@ -492,6 +492,40 @@ class MainWindow(QMainWindow):
                 # Load into staff widget
                 self.score_view.load_midi_notes(file_name)
                 
+                # CRITICAL: Apply current zoom settings after loading MIDI
+                visual_zoom = self.settings.get("visual_zoom", 100)
+                zoom_scale = visual_zoom / 100.0
+                
+                # Update zoom slider to show current value (without triggering change event)
+                self.zoom_slider.blockSignals(True)
+                self.zoom_slider.setValue(int(visual_zoom))
+                self.zoom_spinbox.blockSignals(True)
+                self.zoom_spinbox.setValue(int(visual_zoom))
+                self.zoom_slider.blockSignals(False)
+                self.zoom_spinbox.blockSignals(False)
+                
+                self.score_view.visual_zoom_scale = zoom_scale
+                self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
+                self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
+                
+                # Recalculate pixels_per_second with correct zoom
+                tempo_factor = self.score_view.tempo_bpm / 120.0
+                self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * tempo_factor * zoom_scale
+                
+                # Recalculate all note positions with correct zoom
+                for note in self.score_view.notes:
+                    note['x'] = (note['time'] + self.score_view.preparation_time) * self.score_view.pixels_per_second
+                    note['y'] = self.score_view.pitch_to_y(note['pitch'])
+                
+                # Reapply proportional spacing if enabled
+                if self.score_view.use_proportional_spacing:
+                    self.score_view._apply_proportional_spacing()
+                
+                print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
+                
+                # Force repaint to show changes immediately
+                self.score_view.update()
+                
                 # Reset staff triggers for new song
                 self.score_view.reset_triggers()
                 
@@ -783,16 +817,18 @@ class MainWindow(QMainWindow):
         self.zoom_spinbox.setValue(value)
         self.zoom_spinbox.blockSignals(False)
         
-        # Update staff widget pixels per second based on zoom
-        # Base speed is 100 pixels/second at 100%
-        base_speed = 100
-        zoom_scale = value / 100.0
-        self.score_view.pixels_per_second = base_speed * zoom_scale
-        
         # Update visual zoom scale for staff appearance
+        zoom_scale = value / 100.0
         self.score_view.visual_zoom_scale = zoom_scale
         self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
         self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
+        
+        # CRITICAL: Update pixels_per_second based on BOTH zoom AND tempo
+        # Formula: base_speed * tempo_factor * zoom_scale
+        # This ensures tempo is always respected regardless of zoom level
+        base_speed = 100
+        tempo_factor = self.score_view.tempo_bpm / 120.0
+        self.score_view.pixels_per_second = base_speed * tempo_factor * zoom_scale
         
         # Recalculate note positions if a song is loaded
         if self.score_view.notes:
@@ -858,6 +894,41 @@ class MainWindow(QMainWindow):
             if os.path.exists(actual_path):
                 if self.midi_engine.load_midi(actual_path):
                     self.score_view.load_midi_notes(actual_path)
+                    
+                    # CRITICAL: Apply current zoom settings after loading MIDI
+                    # This ensures tempo calculation includes the correct zoom factor
+                    visual_zoom = self.settings.get("visual_zoom", 100)
+                    zoom_scale = visual_zoom / 100.0
+                    
+                    # Update zoom slider to show current value (without triggering change event)
+                    self.zoom_slider.blockSignals(True)
+                    self.zoom_slider.setValue(int(visual_zoom))
+                    self.zoom_spinbox.blockSignals(True)
+                    self.zoom_spinbox.setValue(int(visual_zoom))
+                    self.zoom_slider.blockSignals(False)
+                    self.zoom_spinbox.blockSignals(False)
+                    
+                    self.score_view.visual_zoom_scale = zoom_scale
+                    self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
+                    self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
+                    
+                    # Recalculate pixels_per_second with correct zoom
+                    tempo_factor = self.score_view.tempo_bpm / 120.0
+                    self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * tempo_factor * zoom_scale
+                    
+                    # Recalculate all note positions with correct zoom
+                    for note in self.score_view.notes:
+                        note['x'] = (note['time'] + self.score_view.preparation_time) * self.score_view.pixels_per_second
+                        note['y'] = self.score_view.pitch_to_y(note['pitch'])
+                    
+                    # Reapply proportional spacing if enabled
+                    if self.score_view.use_proportional_spacing:
+                        self.score_view._apply_proportional_spacing()
+                    
+                    print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
+                    
+                    # Force repaint to show changes immediately
+                    self.score_view.update()
                     
                     # Set progress bar duration
                     if self.midi_engine.events:

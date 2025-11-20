@@ -318,12 +318,8 @@ class MidiEngine(QObject):
         self.is_playing = True
         self.is_paused = False
         
-        # CRITICAL FIX: Start playback at negative time (-preparation_time)
-        # This allows notes to "travel" visually before reaching the red line
-        # If paused_at is 0 (starting from beginning), set it to -preparation_time
-        if self.paused_at == 0:
-            self.paused_at = -self.preparation_time
-        
+        # Note: In Master mode, training_manager controls timing
+        # In Practice/Student modes, this timing is used
         self.start_time = time.time() - self.paused_at
         
         # Start recording for practice mode
