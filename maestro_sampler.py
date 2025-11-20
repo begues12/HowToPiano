@@ -14,6 +14,9 @@ class MaestroSampler:
         self.samples_dir = Path(samples_dir)
         self.samples = {}  # {nota_midi: {velocity_layer: Sound}}
         self.active_sounds = {}  # {nota_midi: Sound actualmente sonando}
+        self.active_channels = {}  # {nota_midi: Channel object}
+        import time
+        self.note_start_times = {}  # {nota_midi: timestamp} para rastrear cuándo empezó cada nota
         
         # Mapeo de capas de velocidad (igual que convert_samples.py)
         self.velocity_layers = {
@@ -55,6 +58,9 @@ class MaestroSampler:
                     
                     # Cargar el sample
                     sound = pygame.mixer.Sound(str(flac_file))
+                    
+                    # Pre-ajustar volumen para mejor rango dinámico
+                    sound.set_volume(0.9)
                     
                     # Guardar en estructura: samples[nota][layer]
                     if note_num not in self.samples:
@@ -104,10 +110,34 @@ class MaestroSampler:
             print(f"⚠ No se encontró sample para nota {note}")
             return
         
-        # Reproducir el sample (permitir múltiples instancias del mismo sample)
-        # Esto simula un piano real donde puedes tocar la misma nota varias veces
-        sound.play()
-        self.active_sounds[note] = sound
+        # Si la misma nota ya está sonando, detenerla primero
+        if note in self.active_channels:
+            try:
+                self.active_channels[note].stop()
+            except:
+                pass
+        
+        # Reproducir el sample
+        try:
+            import time
+            # Limitar duración del sample a 4 segundos para liberar canales más rápido
+            channel = sound.play(maxtime=4000)  # Máximo 4 segundos
+            
+            if channel is not None:
+                self.active_sounds[note] = sound
+                self.active_channels[note] = channel
+                self.note_start_times[note] = time.time()
+            else:
+                # No hay canales disponibles - forzar liberación de notas viejas
+                self._cleanup_old_notes()
+                # Intentar de nuevo
+                channel = sound.play(maxtime=4000)
+                if channel is not None:
+                    self.active_sounds[note] = sound
+                    self.active_channels[note] = channel
+                    self.note_start_times[note] = time.time()
+        except Exception as e:
+            print(f"⚠ Error reproduciendo nota {note}: {e}")
         
         # Auto-detener después de duration (si se especifica)
         if duration is not None:
@@ -118,19 +148,72 @@ class MaestroSampler:
             
             threading.Thread(target=stop_after, daemon=True).start()
     
+    def _cleanup_old_notes(self, max_age=2.0):
+        """
+        Limpia notas que llevan sonando más de max_age segundos
+        """
+        import time
+        current_time = time.time()
+        notes_to_remove = []
+        
+        for note, start_time in list(self.note_start_times.items()):
+            if current_time - start_time > max_age:
+                notes_to_remove.append(note)
+        
+        for note in notes_to_remove:
+            try:
+                if note in self.active_channels:
+                    self.active_channels[note].fadeout(250)  # Fadeout más suave
+                    del self.active_channels[note]
+                if note in self.active_sounds:
+                    del self.active_sounds[note]
+                if note in self.note_start_times:
+                    del self.note_start_times[note]
+            except:
+                pass
+    
     def stop_note(self, note):
         """
         Detiene una nota que está sonando
-        Para notas muy cortas, simplemente dejar que el sample termine naturalmente
         """
-        if note in self.active_sounds:
-            # No hacer nada - dejar que el sample de piano suene completamente
-            # El piano real tiene resonancia y decay natural
+        try:
+            if note in self.active_channels:
+                self.active_channels[note].fadeout(250)  # Fadeout más suave
+                del self.active_channels[note]
+            if note in self.active_sounds:
+                del self.active_sounds[note]
+            if note in self.note_start_times:
+                del self.note_start_times[note]
+        except Exception as e:
             pass
     
     def stop_all(self):
-        """Detiene todas las notas (limpia el registro pero deja que suenen naturalmente)"""
-        self.active_sounds.clear()
+        """Detiene todas las notas"""
+        try:
+            # Detener todos los canales activos
+            for channel in self.active_channels.values():
+                try:
+                    channel.stop()
+                except:
+                    pass
+            
+            self.active_sounds.clear()
+            self.active_channels.clear()
+            self.note_start_times.clear()
+            
+            # Detener todos los canales de pygame
+            pygame.mixer.stop()
+        except Exception as e:
+            print(f"⚠ Error deteniendo todas las notas: {e}")
+    
+    def get_channel_info(self):
+        """Obtiene información sobre el uso de canales (para debug)"""
+        try:
+            total = pygame.mixer.get_num_channels()
+            busy = sum(1 for i in range(total) if pygame.mixer.Channel(i).get_busy())
+            return f"Canales: {busy}/{total} ocupados"
+        except:
+            return "Info no disponible"
 
 
 # Test standalone

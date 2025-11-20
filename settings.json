@@ -21,9 +21,12 @@
   "auto_reconnect": true,
   "played_note_color": [
     0,
-    120,
-    255
+    255,
+    0
   ],
+  "visual_zoom": 102,
+  "playback_tempo": 100,
+  "playback_speed": 100,
   "show_staff_note_colors": false,
   "ledteacher_enabled": true,
   "leds_per_key": 1,

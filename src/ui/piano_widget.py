@@ -23,14 +23,14 @@ class PianoWidget(QWidget):
         self.white_key_rects = {}  # {note: QRectF}
         self.black_key_rects = {}  # {note: QRectF}
         
-        # Finger assignment and colors
+        # Finger assignment and colors (professional, muted palette)
         self.finger_assignments = {}  # {note: finger_number (1-5)}
         self.finger_colors = {
-            1: QColor(255, 100, 100),   # Red - Thumb
-            2: QColor(100, 200, 100),   # Green - Index
-            3: QColor(100, 150, 255),   # Blue - Middle
-            4: QColor(255, 200, 100),   # Yellow - Ring
-            5: QColor(200, 100, 255)    # Purple - Pinky
+            1: QColor(210, 85, 85),     # Muted red - Thumb
+            2: QColor(85, 170, 100),    # Muted green - Index
+            3: QColor(85, 130, 200),    # Muted blue - Middle
+            4: QColor(220, 165, 80),    # Muted amber - Ring
+            5: QColor(165, 90, 185)     # Muted purple - Pinky
         }
         
         # Visual options (can be toggled in settings)
@@ -119,21 +119,30 @@ class PianoWidget(QWidget):
                 r = QRectF(x, 0, key_width, height)
                 self.white_key_rects[note] = r
                 
-                # Color
+                # Color with professional styling
                 if note in self.active_notes:
                     brush = QBrush(self.active_notes[note])
                 elif note in self.finger_assignments and self.show_finger_colors:
-                    # Use finger color with transparency
+                    # Use finger color with subtle transparency
                     finger = self.finger_assignments[note]
                     color = self.get_finger_color(finger)
-                    color.setAlpha(80)  # Semi-transparent
+                    color.setAlpha(65)  # More subtle
                     brush = QBrush(color)
                 else:
-                    brush = QBrush(Qt.GlobalColor.white)
+                    brush = QBrush(QColor(252, 252, 252))  # Off-white (warmer than pure white)
                 
                 painter.setBrush(brush)
-                painter.setPen(QPen(Qt.GlobalColor.black))
+                # Professional border: darker gray with slight shadow effect
+                painter.setPen(QPen(QColor(50, 50, 50), 1.5))
                 painter.drawRect(r)
+                
+                # Add subtle inner shadow for depth
+                if note not in self.active_notes:
+                    shadow_color = QColor(0, 0, 0, 12)
+                    painter.setBrush(QBrush(shadow_color))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    shadow_rect = QRectF(r.x() + 1, r.y() + 1, r.width() - 2, 4)
+                    painter.drawRect(shadow_rect)
                 
                 # Draw note name
                 if self.show_note_names:
@@ -179,17 +188,26 @@ class PianoWidget(QWidget):
                 if note in self.active_notes:
                     brush = QBrush(self.active_notes[note])
                 elif note in self.finger_assignments and self.show_finger_colors:
-                    # Use finger color with transparency
+                    # Use finger color with subtle transparency
                     finger = self.finger_assignments[note]
                     color = self.get_finger_color(finger)
-                    color.setAlpha(120)  # Semi-transparent
+                    color.setAlpha(140)  # Slightly more visible on black keys
                     brush = QBrush(color)
                 else:
-                    brush = QBrush(Qt.GlobalColor.black)
+                    brush = QBrush(QColor(28, 28, 32))  # Darker charcoal (not pure black)
                 
                 painter.setBrush(brush)
-                painter.setPen(QPen(Qt.GlobalColor.black))
+                # Subtle border for definition
+                painter.setPen(QPen(QColor(15, 15, 15), 1.5))
                 painter.drawRect(r)
+                
+                # Add highlight on top edge for 3D effect
+                if note not in self.active_notes:
+                    highlight_color = QColor(255, 255, 255, 15)
+                    painter.setBrush(QBrush(highlight_color))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    highlight_rect = QRectF(r.x() + 1, r.y() + 1, r.width() - 2, 3)
+                    painter.drawRect(highlight_rect)
                 
                 # Draw note name on black keys
                 if self.show_note_names:
@@ -238,7 +256,7 @@ class PianoWidget(QWidget):
                 self.mouse_pressed_notes.add(note)
                 velocity = 100  # Default velocity for mouse clicks
                 self.note_pressed.emit(note, velocity)
-                self.note_on(note, QColor(255, 140, 0))  # Bright orange for user input
+                self.note_on(note, QColor(230, 120, 40))  # Muted orange for user input
     
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Handle mouse release"""
@@ -259,7 +277,7 @@ class PianoWidget(QWidget):
                 self.mouse_pressed_notes.add(note)
                 velocity = 100
                 self.note_pressed.emit(note, velocity)
-                self.note_on(note, QColor("cyan"))
+                self.note_on(note, QColor(100, 180, 190))  # Muted teal
             
             # Release notes we're no longer over
             for pressed_note in list(self.mouse_pressed_notes):

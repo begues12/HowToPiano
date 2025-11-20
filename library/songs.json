@@ -28,5 +28,35 @@
     "name": "Heart and Soul (piano duet)",
     "path": "library\\songs\\9c250e8d392e7a336d66ca97a9835120.mid",
     "svg_cached": false
+  },
+  {
+    "id": "4cedd1c1215912f6ce73c38daf963820",
+    "name": "The Imperial March - Star Wars.mid",
+    "path": "library\\songs\\4cedd1c1215912f6ce73c38daf963820.mid",
+    "svg_cached": false
+  },
+  {
+    "id": "0b65bdfec88e8563c778206f23cebb3f",
+    "name": "ElvisPresley - Burning Love",
+    "path": "library\\songs\\0b65bdfec88e8563c778206f23cebb3f.mid",
+    "svg_cached": false
+  },
+  {
+    "id": "3936f71e2d2656d199ca29942b76a72d",
+    "name": "Fur Elise",
+    "path": "library\\songs\\3936f71e2d2656d199ca29942b76a72d.mid",
+    "svg_cached": false
+  },
+  {
+    "id": "7d3190e8aa3f63393c756867bd44dd0d",
+    "name": "alla-turca",
+    "path": "library\\songs\\7d3190e8aa3f63393c756867bd44dd0d.mid",
+    "svg_cached": false
+  },
+  {
+    "id": "a1a1e7eaaa439658326e312512d21e2a",
+    "name": "Elvis_Presley_-_Can't_Help_Falling_In_Love",
+    "path": "library\\songs\\a1a1e7eaaa439658326e312512d21e2a.mid",
+    "svg_cached": false
   }
 ]

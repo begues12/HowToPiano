@@ -51,6 +51,9 @@ class MidiEngine(QObject):
         self.timer.setInterval(10) # 10ms
         self.timer.timeout.connect(self.tick)
         
+        # Training mode manager (set by MainWindow after initialization)
+        self.training_manager = None
+        
         # Audio synth
         self.audio_synth = None
         self.sfid = None
@@ -84,6 +87,9 @@ class MidiEngine(QObject):
         # Corrector mode (error tracking)
         self.mistakes = []  # List of {note, time, expected} mistakes
         self.corrector_index = 0
+        
+        # Preparation time (seconds notes appear before they should be played)
+        self.preparation_time = 3.0  # Default - will be set by MainWindow
     
     def _init_audio(self):
         """Initialize FluidSynth for audio playback"""
@@ -127,7 +133,11 @@ class MidiEngine(QObject):
         """Initialize Maestro Concert Grand Piano sampler"""
         try:
             # Initialize pygame.mixer first (needed for sample playback)
-            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            # Increase channels to 128 for more simultaneous notes and reduce buffer for lower latency
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=256)
+            pygame.mixer.set_num_channels(128)
+            # Reserve some channels to prevent critical notes from being cut
+            pygame.mixer.set_reserved(16)
             
             # Load Maestro samples
             self.maestro_sampler = MaestroSampler()
@@ -307,6 +317,13 @@ class MidiEngine(QObject):
         
         self.is_playing = True
         self.is_paused = False
+        
+        # CRITICAL FIX: Start playback at negative time (-preparation_time)
+        # This allows notes to "travel" visually before reaching the red line
+        # If paused_at is 0 (starting from beginning), set it to -preparation_time
+        if self.paused_at == 0:
+            self.paused_at = -self.preparation_time
+        
         self.start_time = time.time() - self.paused_at
         
         # Start recording for practice mode
@@ -336,9 +353,9 @@ class MidiEngine(QObject):
         self.is_paused = False
         self.timer.stop()
         self.current_event_index = 0
-        self.paused_at = 0
+        self.paused_at = 0  # Reset to 0, play() will adjust to -preparation_time
         self.waiting_for = set()
-        self.playback_update.emit(0)
+        self.playback_update.emit(0)  # Update to 0 (go_to_start will handle negative time in staff)
     
     def seek(self, position):
         """Jump to specific position in seconds"""
@@ -374,29 +391,28 @@ class MidiEngine(QObject):
         print(f"Seeked to {position:.2f}s (event {target_index}/{len(self.events)})")
 
     def tick(self):
+        """Called every 10ms - delegates to training manager"""
+        if not self.timer.isActive():
+            return
+        
+        # Delegate to training manager if available
+        if self.training_manager:
+            self.training_manager.tick()
+            return
+        
+        # Fallback: old behavior (shouldn't happen in normal operation)
         if not self.is_playing: return
-        
-        # PRACTICE MODE: Wait for user to press lit keys
-        if self.mode == "Practice" and self.waiting_for:
-            # Freeze time while waiting
-            self.start_time = time.time() - self.events[self.current_event_index]['time']
-            return
-        
-        # STUDENT MODE: Handled separately (call and response)
-        if self.mode == "Student":
-            self._handle_student_mode()
-            return
-        
-        # CORRECTOR MODE: Review mistakes
-        if self.mode == "Corrector":
-            self._handle_corrector_mode()
-            return
         
         # MASTER MODE or normal playback
         now = time.time() - self.start_time
         
         # Update visual position to current playback time
         self.playback_update.emit(now)
+        
+        # CRITICAL FIX: Don't process MIDI events during preparation time (negative time)
+        # Events should only start when now >= 0
+        if now < 0:
+            return  # Still in preparation phase, don't process any events
         
         while self.current_event_index < len(self.events):
             evt = self.events[self.current_event_index]
