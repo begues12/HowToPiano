@@ -18,5 +18,17 @@
   "repeat_section": false,
   "practice_tempo": 75,
   "baud_rate": 9600,
-  "auto_reconnect": true
+  "auto_reconnect": true,
+  "played_note_color": [
+    0,
+    120,
+    255
+  ],
+  "show_staff_note_colors": false,
+  "ledteacher_enabled": true,
+  "leds_per_key": 1,
+  "led_brightness": 0,
+  "led_color_mode": "Rainbow",
+  "ledteacher_port": "COM4",
+  "ledteacher_baud": 115200
 }

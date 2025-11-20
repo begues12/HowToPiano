@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
                              QDialogButtonBox, QSpinBox, QTabWidget, QWidget, QSlider,
-                             QCheckBox, QGroupBox, QFormLayout)
+                             QCheckBox, QGroupBox, QFormLayout, QPushButton, QColorDialog)
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 
 class SettingsDialog(QDialog):
     def __init__(self, current_settings=None, parent=None):
@@ -30,6 +31,10 @@ class SettingsDialog(QDialog):
         # Tab 4: Connection
         connection_tab = self._create_connection_tab(current_settings)
         tabs.addTab(connection_tab, "Connection")
+        
+        # Tab 5: LedTeacher (Arduino)
+        ledteacher_tab = self._create_ledteacher_tab(current_settings)
+        tabs.addTab(ledteacher_tab, "LedTeacher")
         
         main_layout.addWidget(tabs)
         
@@ -142,6 +147,31 @@ class SettingsDialog(QDialog):
         self.show_active_note_colors = QCheckBox("Show colors when notes are played")
         self.show_active_note_colors.setChecked(settings.get("show_active_note_colors", True) if settings else True)
         visual_layout.addWidget(self.show_active_note_colors)
+        
+        self.show_staff_note_colors = QCheckBox("Show colors on staff notes")
+        self.show_staff_note_colors.setChecked(settings.get("show_staff_note_colors", True) if settings else True)
+        visual_layout.addWidget(self.show_staff_note_colors)
+        
+        # Played note color picker
+        color_layout = QHBoxLayout()
+        color_label = QLabel("Color for played notes:")
+        self.played_note_color_btn = QPushButton("")
+        self.played_note_color_btn.setFixedSize(50, 25)
+        
+        # Get color from settings or use default electric blue
+        if settings and "played_note_color" in settings:
+            color_data = settings["played_note_color"]
+            self.played_note_color = QColor(color_data[0], color_data[1], color_data[2])
+        else:
+            self.played_note_color = QColor(0, 120, 255)  # Electric blue default
+        
+        self.played_note_color_btn.setStyleSheet(f"background-color: rgb({self.played_note_color.red()}, {self.played_note_color.green()}, {self.played_note_color.blue()});")
+        self.played_note_color_btn.clicked.connect(self._choose_played_note_color)
+        
+        color_layout.addWidget(color_label)
+        color_layout.addWidget(self.played_note_color_btn)
+        color_layout.addStretch()
+        visual_layout.addLayout(color_layout)
         
         visual_group.setLayout(visual_layout)
         layout.addRow(visual_group)
@@ -295,7 +325,93 @@ class SettingsDialog(QDialog):
         layout.addRow(QLabel(""))  # Spacer
         
         return widget
+    
+    def _create_ledteacher_tab(self, settings):
+        """LedTeacher (Arduino) configuration tab"""
+        widget = QWidget()
+        layout = QFormLayout(widget)
+        layout.setSpacing(15)
         
+        # Enable LedTeacher
+        self.ledteacher_enabled = QCheckBox("Enable LedTeacher Arduino")
+        self.ledteacher_enabled.setChecked(settings.get("ledteacher_enabled", False) if settings else False)
+        layout.addRow("", self.ledteacher_enabled)
+        
+        layout.addRow(QLabel(""))  # Spacer
+        
+        # LED Configuration Group
+        led_group = QGroupBox("LED Configuration")
+        led_layout = QFormLayout()
+        
+        # Number of LEDs per key
+        self.leds_per_key = QSpinBox()
+        self.leds_per_key.setRange(1, 10)
+        self.leds_per_key.setValue(settings.get("leds_per_key", 1) if settings else 1)
+        led_layout.addRow("LEDs per key:", self.leds_per_key)
+        
+        # LED brightness
+        brightness_layout = QHBoxLayout()
+        self.led_brightness = QSlider(Qt.Orientation.Horizontal)
+        self.led_brightness.setRange(0, 255)
+        self.led_brightness.setValue(settings.get("led_brightness", 128) if settings else 128)
+        self.brightness_label = QLabel(str(self.led_brightness.value()))
+        self.led_brightness.valueChanged.connect(lambda v: self.brightness_label.setText(str(v)))
+        brightness_layout.addWidget(self.led_brightness)
+        brightness_layout.addWidget(self.brightness_label)
+        led_layout.addRow("LED Brightness:", brightness_layout)
+        
+        # LED color mode
+        self.led_color_mode = QComboBox()
+        self.led_color_mode.addItems(["Finger Colors", "Single Color", "Rainbow", "Note Pitch"])
+        if settings and "led_color_mode" in settings:
+            self.led_color_mode.setCurrentText(settings["led_color_mode"])
+        else:
+            self.led_color_mode.setCurrentIndex(0)
+        led_layout.addRow("Color Mode:", self.led_color_mode)
+        
+        led_group.setLayout(led_layout)
+        layout.addRow(led_group)
+        
+        layout.addRow(QLabel(""))  # Spacer
+        
+        # Communication Group
+        comm_group = QGroupBox("Communication")
+        comm_layout = QFormLayout()
+        
+        # Arduino Port for LedTeacher
+        self.ledteacher_port = QComboBox()
+        self.ledteacher_port.addItems(["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+                                       "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"])
+        self.ledteacher_port.setEditable(True)
+        if settings and "ledteacher_port" in settings:
+            self.ledteacher_port.setCurrentText(settings["ledteacher_port"])
+        else:
+            self.ledteacher_port.setCurrentText("COM4")
+        comm_layout.addRow("Arduino Port:", self.ledteacher_port)
+        
+        # Baud rate for LedTeacher
+        self.ledteacher_baud = QComboBox()
+        self.ledteacher_baud.addItems(["9600", "19200", "38400", "57600", "115200"])
+        if settings and "ledteacher_baud" in settings:
+            self.ledteacher_baud.setCurrentText(str(settings["ledteacher_baud"]))
+        else:
+            self.ledteacher_baud.setCurrentText("115200")
+        comm_layout.addRow("Baud Rate:", self.ledteacher_baud)
+        
+        comm_group.setLayout(comm_layout)
+        layout.addRow(comm_group)
+        
+        layout.addRow(QLabel(""))  # Spacer
+        
+        return widget
+        
+    def _choose_played_note_color(self):
+        """Open color picker for played note color"""
+        color = QColorDialog.getColor(self.played_note_color, self, "Choose Played Note Color")
+        if color.isValid():
+            self.played_note_color = color
+            self.played_note_color_btn.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()});")
+    
     def get_settings(self):
         """Return all settings as dictionary"""
         return {
@@ -306,6 +422,8 @@ class SettingsDialog(QDialog):
             "show_finger_colors": self.show_finger_colors.isChecked(),
             "show_finger_numbers": self.show_finger_numbers.isChecked(),
             "show_active_note_colors": self.show_active_note_colors.isChecked(),
+            "show_staff_note_colors": self.show_staff_note_colors.isChecked(),
+            "played_note_color": [self.played_note_color.red(), self.played_note_color.green(), self.played_note_color.blue()],
             
             # Audio
             "sound": self.sound_combo.currentText(),
@@ -325,5 +443,13 @@ class SettingsDialog(QDialog):
             # Connection
             "port": self.port_input.currentText(),
             "baud_rate": int(self.baud_combo.currentText()),
-            "auto_reconnect": self.auto_reconnect.isChecked()
+            "auto_reconnect": self.auto_reconnect.isChecked(),
+            
+            # LedTeacher
+            "ledteacher_enabled": self.ledteacher_enabled.isChecked(),
+            "leds_per_key": self.leds_per_key.value(),
+            "led_brightness": self.led_brightness.value(),
+            "led_color_mode": self.led_color_mode.currentText(),
+            "ledteacher_port": self.ledteacher_port.currentText(),
+            "ledteacher_baud": int(self.ledteacher_baud.currentText())
         }

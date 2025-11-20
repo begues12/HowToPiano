@@ -6,4 +6,4 @@ numpy
 verovio
 pygame
 pyfluidsynth
-
+pyaudioop

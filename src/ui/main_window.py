@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import threading
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QFileDialog, QMessageBox
 from PyQt6.QtCore import Qt, QThread, QSize
 
@@ -99,6 +100,12 @@ class MainWindow(QMainWindow):
         self.piano_widget.show_finger_colors = self.settings.get("show_finger_colors", True)
         self.piano_widget.show_finger_numbers = self.settings.get("show_finger_numbers", True)
         self.piano_widget.show_active_note_colors = self.settings.get("show_active_note_colors", True)
+        
+        # Apply saved visual settings to staff
+        self.score_view.show_note_colors = self.settings.get("show_staff_note_colors", True)
+        
+        # Apply preparation time from settings
+        self.score_view.preparation_time = self.settings.get("preparation_time", 3)
         
         main_v_layout.addWidget(self.piano_widget)
 
@@ -301,6 +308,10 @@ class MainWindow(QMainWindow):
         self.midi_engine.note_on_signal.connect(self.on_playback_note_on)
         self.midi_engine.note_off_signal.connect(self.on_playback_note_off)
         self.midi_engine.practice_finished.connect(self.show_practice_results)
+        
+        # Connect Staff (Pentagrama) signals - Staff controls playback visuals and sound
+        self.score_view.note_triggered.connect(self.on_staff_note_triggered)
+        self.score_view.note_ended.connect(self.on_staff_note_ended)
 
     def open_midi(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open MIDI File", "", "MIDI Files (*.mid *.midi)")
@@ -311,6 +322,9 @@ class MainWindow(QMainWindow):
                 self.song_library.add_song(file_name)
                 # Load into staff widget
                 self.score_view.load_midi_notes(file_name)
+                
+                # Reset staff triggers for new song
+                self.score_view.reset_triggers()
                 
                 # Set progress bar duration
                 if self.midi_engine.events:
@@ -342,12 +356,19 @@ class MainWindow(QMainWindow):
             # Update Piano Widget
             self.piano_widget.set_num_keys(self.settings["keys"])
             
-            # Apply visual settings
+            # Apply visual settings to piano
             self.piano_widget.show_note_names = self.settings.get("show_key_labels", True)
             self.piano_widget.show_finger_colors = self.settings.get("show_finger_colors", True)
             self.piano_widget.show_finger_numbers = self.settings.get("show_finger_numbers", True)
             self.piano_widget.show_active_note_colors = self.settings.get("show_active_note_colors", True)
             self.piano_widget.update()
+            
+            # Apply visual settings to staff
+            self.score_view.show_note_colors = self.settings.get("show_staff_note_colors", True)
+            self.score_view.update()
+            
+            # Apply preparation time to staff (note: requires reloading song to take effect)
+            self.score_view.preparation_time = self.settings.get("preparation_time", 3)
             
             # TODO: Apply settings (e.g. reconnect Arduino if port changed)
 
@@ -375,6 +396,7 @@ class MainWindow(QMainWindow):
 
     def stop_playback(self):
         self.midi_engine.stop()
+        self.score_view.reset_triggers()  # Reset staff note triggers
         self.btn_play.setEnabled(True)
         self.btn_pause.setEnabled(False)
         mode_name = self.midi_engine.mode
@@ -553,6 +575,9 @@ class MainWindow(QMainWindow):
     
     def seek_to_time(self, time_sec):
         """Seek to specific time in song"""
+        # Reset staff triggers when seeking
+        self.score_view.reset_triggers()
+        
         if hasattr(self.midi_engine, 'seek'):
             self.midi_engine.seek(time_sec)
         else:
@@ -563,9 +588,51 @@ class MainWindow(QMainWindow):
             if was_playing:
                 self.midi_engine.play()
 
+    def on_staff_note_triggered(self, pitch, velocity):
+        """Called when a note crosses the red line on the staff"""
+        # Play audio in separate thread to avoid blocking
+        def play_note_async():
+            # Play the sound
+            self.midi_engine.synth.note_on(pitch, velocity)
+            
+            # Play audio (Maestro sampler or pygame synthesis)
+            if self.midi_engine.audio_type in ['maestro', 'pygame']:
+                self.midi_engine._play_note_pygame(pitch, velocity)
+        
+        # Start thread for audio playback
+        note_thread = threading.Thread(target=play_note_async, daemon=True)
+        note_thread.start()
+        
+        # Illuminate the piano key with configured color
+        self.piano_widget.note_on(pitch, self.get_played_note_color())
+        
+        # Highlight on staff
+        self.score_view.note_on(pitch)
+    
+    def on_staff_note_ended(self, pitch):
+        """Called when a note ends (crosses red line + duration)"""
+        # Stop audio in separate thread to avoid blocking
+        def stop_note_async():
+            # Stop the sound
+            self.midi_engine.synth.note_off(pitch)
+            
+            # Stop audio (Maestro sampler or pygame synthesis)
+            if self.midi_engine.audio_type in ['maestro', 'pygame']:
+                self.midi_engine._stop_note_pygame(pitch)
+        
+        # Start thread for stopping audio
+        stop_thread = threading.Thread(target=stop_note_async, daemon=True)
+        stop_thread.start()
+        
+        # Turn off piano key
+        self.piano_widget.note_off(pitch)
+        
+        # Remove highlight from staff
+        self.score_view.note_off(pitch)
+    
     def on_playback_note_on(self, note, velocity):
-        # Called when the MIDI file plays a note - use cyan/turquoise for playback
-        self.piano_widget.note_on(note, QColor(0, 200, 255))  # Bright cyan
+        # Called when the MIDI file plays a note - use configured color
+        self.piano_widget.note_on(note, self.get_played_note_color())
         self.score_view.note_on(note)
         
     def on_playback_note_off(self, note):
@@ -573,29 +640,10 @@ class MainWindow(QMainWindow):
         self.score_view.note_off(note)
 
     def adapt_song_to_piano(self):
-        """Adapt piano display to show all song notes"""
-        min_pitch, max_pitch = self.score_view.get_note_range()
-        
-        if min_pitch is None:
-            return
-        
-        # Expand piano to show all notes in the song
-        self.piano_widget.physical_keys = self.settings["keys"]
-        
-        # Calculate visual range needed for song
-        song_range = max_pitch - min_pitch + 1
-        
-        # Expand to show full song range
-        self.piano_widget.start_note = min_pitch
-        self.piano_widget.num_keys = song_range
-        
-        # Visual indicator
-        message = f"Showing {song_range} keys (notes {min_pitch}-{max_pitch})"
-        if song_range > self.piano_widget.physical_keys:
-            message += f" - Physical piano: {self.piano_widget.physical_keys} keys"
-        
-        self.status_label.setText(message)
-        print(f"Piano expanded: {min_pitch} to {max_pitch} ({song_range} keys)")
+        """Keep piano size fixed according to settings (no adaptation)"""
+        # Piano keeps the configured number of keys from settings
+        # No automatic expansion based on song range
+        pass
     
     def sync_finger_assignments(self):
         """Sync finger assignments from staff to piano widget"""
@@ -634,6 +682,11 @@ class MainWindow(QMainWindow):
             self.mode_label.setText("Master Mode")
             self.setWindowTitle("How To Piano")
     
+    def get_played_note_color(self):
+        """Get played note color from settings as QColor"""
+        color_data = self.settings.get("played_note_color", [0, 120, 255])
+        return QColor(color_data[0], color_data[1], color_data[2])
+    
     def load_settings(self):
         """Load settings from file or return defaults"""
         default_settings = {
@@ -656,7 +709,8 @@ class MainWindow(QMainWindow):
             "repeat_section": False,
             "practice_tempo": 75,
             "baud_rate": 9600,
-            "auto_reconnect": True
+            "auto_reconnect": True,
+            "played_note_color": [0, 120, 255]  # Electric blue default
         }
         
         if os.path.exists(self.settings_file):

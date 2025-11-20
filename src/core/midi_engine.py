@@ -21,6 +21,15 @@ try:
 except ImportError:
     print("Pygame not available")
 
+# Try to import Maestro Sampler (real piano samples)
+MAESTRO_AVAILABLE = False
+try:
+    from maestro_sampler import MaestroSampler
+    MAESTRO_AVAILABLE = True
+    print("Maestro Concert Grand Piano samples available")
+except ImportError as e:
+    print(f"Maestro sampler not available ({e})")
+
 class MidiEngine(QObject):
     playback_update = pyqtSignal(float) # current time in seconds
     note_on_signal = pyqtSignal(int, int) # note, velocity
@@ -45,8 +54,13 @@ class MidiEngine(QObject):
         # Audio synth
         self.audio_synth = None
         self.sfid = None
-        self.audio_type = None  # 'fluidsynth', 'pygame', or None
-        if FLUIDSYNTH_AVAILABLE:
+        self.maestro_sampler = None
+        self.audio_type = None  # 'maestro', 'fluidsynth', 'pygame', or None
+        
+        # Priority: Maestro samples > FluidSynth > Pygame synthesis
+        if MAESTRO_AVAILABLE:
+            self._init_maestro_sampler()
+        elif FLUIDSYNTH_AVAILABLE:
             self._init_audio()
         elif PYGAME_AVAILABLE:
             self._init_pygame_audio()
@@ -108,6 +122,21 @@ class MidiEngine(QObject):
         except Exception as e:
             print(f"Pygame audio init failed: {e}")
             self.audio_type = None
+    
+    def _init_maestro_sampler(self):
+        """Initialize Maestro Concert Grand Piano sampler"""
+        try:
+            # Initialize pygame.mixer first (needed for sample playback)
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            
+            # Load Maestro samples
+            self.maestro_sampler = MaestroSampler()
+            self.audio_type = 'maestro'
+            print("Audio: Using Maestro Concert Grand Piano samples")
+        except Exception as e:
+            print(f"Maestro sampler init failed: {e}")
+            self.audio_type = None
+            self.maestro_sampler = None
     
     def _generate_piano_tone(self, note, duration=2.0):
         """Generate a realistic piano-like tone using pygame"""
@@ -188,7 +217,16 @@ class MidiEngine(QObject):
         return pygame.sndarray.make_sound(stereo_wave)
     
     def _play_note_pygame(self, note, velocity):
-        """Play note using pygame"""
+        """Play note using pygame or Maestro sampler"""
+        # Use Maestro sampler if available
+        if self.audio_type == 'maestro' and self.maestro_sampler:
+            try:
+                self.maestro_sampler.play_note(note, velocity)
+                return
+            except Exception as e:
+                print(f"Error playing Maestro sample {note}: {e}")
+        
+        # Fallback to pygame synthesis
         if self.audio_type != 'pygame':
             return
         
@@ -206,7 +244,16 @@ class MidiEngine(QObject):
             print(f"Error playing note {note}: {e}")
     
     def _stop_note_pygame(self, note):
-        """Stop note using pygame"""
+        """Stop note using pygame or Maestro sampler"""
+        # Use Maestro sampler if available
+        if self.audio_type == 'maestro' and self.maestro_sampler:
+            try:
+                self.maestro_sampler.stop_note(note)
+                return
+            except Exception as e:
+                print(f"Error stopping Maestro sample {note}: {e}")
+        
+        # Fallback to pygame synthesis
         if self.audio_type != 'pygame':
             return
         
@@ -225,6 +272,20 @@ class MidiEngine(QObject):
                 current_time += msg.time
                 if msg.type in ['note_on', 'note_off']:
                     self.events.append({'time': current_time, 'msg': msg})
+            
+            # Find first note_on to eliminate initial silence
+            first_note_time = None
+            for event in self.events:
+                if event['msg'].type == 'note_on' and event['msg'].velocity > 0:
+                    first_note_time = event['time']
+                    break
+            
+            # Offset all events so first note starts at time 0
+            if first_note_time is not None and first_note_time > 0:
+                for event in self.events:
+                    event['time'] -= first_note_time
+                current_time -= first_note_time
+                print(f"MidiEngine: Removed {first_note_time:.2f}s of initial silence")
             
             print(f"Loaded {len(self.events)} events. Total time: {current_time:.2f}s")
             
@@ -278,6 +339,39 @@ class MidiEngine(QObject):
         self.paused_at = 0
         self.waiting_for = set()
         self.playback_update.emit(0)
+    
+    def seek(self, position):
+        """Jump to specific position in seconds"""
+        if not self.events:
+            return
+        
+        # Stop all currently playing notes
+        for note in range(128):
+            self.synth.note_off(note)
+            self.note_off_signal.emit(note)
+            if self.audio_type == 'pygame' and note in self.active_sounds:
+                self.active_sounds[note].stop()
+        
+        # Find the event index closest to the target position
+        target_index = 0
+        for i, event in enumerate(self.events):
+            if event['time'] <= position:
+                target_index = i
+            else:
+                break
+        
+        self.current_event_index = target_index
+        
+        # If playing, adjust start_time to continue from new position
+        if self.is_playing:
+            self.start_time = time.time() - position
+        else:
+            # If paused, update paused_at
+            self.paused_at = position
+        
+        # Update visual playback position immediately
+        self.playback_update.emit(position)
+        print(f"Seeked to {position:.2f}s (event {target_index}/{len(self.events)})")
 
     def tick(self):
         if not self.is_playing: return
@@ -301,7 +395,7 @@ class MidiEngine(QObject):
         # MASTER MODE or normal playback
         now = time.time() - self.start_time
         
-        # Update visual position FIRST (before playing notes)
+        # Update visual position to current playback time
         self.playback_update.emit(now)
         
         while self.current_event_index < len(self.events):
@@ -321,23 +415,17 @@ class MidiEngine(QObject):
                         break  # Stop and wait
                 
                 # Normal playback (MASTER mode and others)
+                # NOTE: In MASTER mode, the staff widget controls note playback via red line triggers
+                # Only emit signals for visual feedback, don't play audio here
                 if self.mode != "Practice":  # Practice mode handles notes differently
                     if msg.type == 'note_on' and msg.velocity > 0:
-                        self.synth.note_on(msg.note, msg.velocity)
-                        self.note_on_signal.emit(msg.note, msg.velocity)
-                        # Play audio
-                        if self.audio_type == 'fluidsynth' and self.audio_synth:
-                            self.audio_synth.noteon(0, msg.note, msg.velocity)
-                        elif self.audio_type == 'pygame':
-                            self._play_note_pygame(msg.note, msg.velocity)
+                        # Only emit signal for visual highlighting (staff will handle audio)
+                        # self.note_on_signal.emit(msg.note, msg.velocity)
+                        pass  # Staff triggers handle everything in Master mode
                     elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                        self.synth.note_off(msg.note)
-                        self.note_off_signal.emit(msg.note)
-                        # Stop audio
-                        if self.audio_type == 'fluidsynth' and self.audio_synth:
-                            self.audio_synth.noteoff(0, msg.note)
-                        elif self.audio_type == 'pygame':
-                            self._stop_note_pygame(msg.note)
+                        # Only emit signal for visual feedback (staff will handle audio)
+                        # self.note_off_signal.emit(msg.note)
+                        pass  # Staff triggers handle everything in Master mode
                 
                 self.current_event_index += 1
             else:
@@ -531,7 +619,7 @@ class MidiEngine(QObject):
         # Play audio for user input
         if self.audio_type == 'fluidsynth' and self.audio_synth:
             self.audio_synth.noteon(0, note, velocity)
-        elif self.audio_type == 'pygame':
+        elif self.audio_type in ['maestro', 'pygame']:
             self._play_note_pygame(note, velocity)
         
         # PRACTICE MODE: Check if this is the note we're waiting for
@@ -560,6 +648,12 @@ class MidiEngine(QObject):
         if note in self.active_notes:
             self.active_notes.remove(note)
         self.synth.note_off(note)
+        
+        # Stop audio for user input
+        if self.audio_type == 'fluidsynth' and self.audio_synth:
+            self.audio_synth.noteoff(0, note)
+        elif self.audio_type in ['maestro', 'pygame']:
+            self._stop_note_pygame(note)
         
         # Stop audio for user input
         if self.audio_type == 'fluidsynth' and self.audio_synth:

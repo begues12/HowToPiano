@@ -1,11 +1,15 @@
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer
+from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QFontDatabase
 import mido
 import os
 
 class StaffWidget(QWidget):
     """Interactive musical staff that displays and highlights notes during playback"""
+    
+    # Signals emitted when notes cross the red line
+    note_triggered = pyqtSignal(int, int)  # (pitch, velocity) - note should play
+    note_ended = pyqtSignal(int)  # (pitch) - note should stop
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -32,7 +36,6 @@ class StaffWidget(QWidget):
         self.active_note_ids = set()  # IDs of notes currently being played
         self.active_chord_id = None  # Currently active chord group
         self.current_time = 0  # Current playback time in seconds
-        self.pixels_per_second = 100  # Horizontal spacing
         self.scroll_offset = 0  # Horizontal scroll position
         
         # Staff parameters
@@ -40,7 +43,12 @@ class StaffWidget(QWidget):
         self.top_margin = 50
         self.bottom_margin = 50
         self.left_margin = 100  # Space for fixed clef
-        self.preparation_time = 3.0  # 3 seconds before start
+        self.pixels_per_second = 100  # FIXED scrolling speed
+        
+        # Preparation time - controlled by settings.json (default 3 seconds)
+        # This determines how far ahead of the red line the first note appears
+        # distance = preparation_time * pixels_per_second (e.g., 3s * 100px/s = 300px)
+        self.preparation_time = 3.0  # Default - will be overridden by settings
         
         # Countdown state
         self.countdown_active = False
@@ -57,6 +65,13 @@ class StaffWidget(QWidget):
             5: QColor(200, 100, 255)    # Purple - Pinky
         }
         self.note_fingers = {}  # {note_id: finger_number}
+        
+        # Red line triggering system
+        self.triggered_notes = set()  # IDs of notes that have already been triggered
+        self.last_check_time = -1.0  # Last time we checked for note triggers
+        
+        # Visual options
+        self.show_note_colors = True  # Toggle for colored notes
         
         # Note name to MIDI number mapping
         self.note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -98,6 +113,20 @@ class StaffWidget(QWidget):
             
             # Sort all events by time
             events.sort(key=lambda e: e['time'])
+            
+            # Find the first note_on event to eliminate initial silence
+            first_note_time = None
+            for event in events:
+                if event['type'] == 'note_on' and event['velocity'] > 0:
+                    first_note_time = event['time']
+                    break
+            
+            # Offset all events so first note starts at time 0
+            time_offset = first_note_time if first_note_time is not None else 0
+            if time_offset > 0:
+                for event in events:
+                    event['time'] -= time_offset
+                print(f"StaffWidget: Removed {time_offset:.2f}s of initial silence")
             
             # Track active notes
             active_notes = {}  # pitch -> start_time
@@ -161,6 +190,9 @@ class StaffWidget(QWidget):
                 print(f"StaffWidget: First note at time {self.notes[0]['time']:.2f}s, pitch {self.notes[0]['pitch']}")
                 print(f"StaffWidget: Sample chord sizes: {[len(c['note_ids']) for c in self.chords[:5]]}")
             
+            # Note positions are already calculated with FIXED preparation_time
+            # No recalculation needed - positions are immutable after loading
+            
             # Assign fingers based on note positions
             self._assign_fingers_to_notes()
             
@@ -182,11 +214,13 @@ class StaffWidget(QWidget):
         # Line 4: D5 (MIDI 74)
         # Line 5: F5 (MIDI 77)
         
-        center_y = self.height() / 2
+        # Use FIXED center position for staff - independent of widget height
+        # The staff center is at a fixed position from the top
+        staff_center_y = self.top_margin + (self.staff_spacing * 10)  # Fixed position
         
         # Reference: B4 (MIDI 71) is on the middle line (line 3)
         reference_note = 71  # B4
-        reference_y = center_y  # Middle line
+        reference_y = staff_center_y  # Middle line at fixed position
         
         # Each half-step (semitone) moves by staff_spacing/2
         # Notes go UP as MIDI number increases, but Y goes DOWN
@@ -287,8 +321,60 @@ class StaffWidget(QWidget):
         playback_line_x = self.left_margin + 50  # Position of red line
         self.scroll_offset = target_x - playback_line_x
         
-        # Don't update active_notes here - let note_on/note_off handle it
-        # This prevents false highlighting of notes that overlap in time
+        # Check for notes crossing the red line and trigger them
+        self._check_and_trigger_notes(time_sec)
+        
+        self.update()
+    
+    def _check_and_trigger_notes(self, current_time):
+        """Check if any notes are crossing the red line and trigger them"""
+        if not self.notes:
+            return
+        
+        # Define tolerance window (notes trigger slightly before reaching the line)
+        trigger_tolerance = 0.05  # 50ms tolerance
+        
+        # Check each note
+        for note in self.notes:
+            note_time = note['time']
+            note_id = note['id']
+            note_end_time = note_time + note['duration']
+            
+            # Check if note should start (crosses red line)
+            if (current_time >= note_time - trigger_tolerance and 
+                current_time < note_time + trigger_tolerance and
+                note_id not in self.triggered_notes):
+                
+                # Trigger note ON
+                self.triggered_notes.add(note_id)
+                velocity = 80  # Default velocity
+                self.note_triggered.emit(note['pitch'], velocity)
+                
+            # Check if note should end
+            elif (current_time >= note_end_time - trigger_tolerance and
+                  note_id in self.triggered_notes):
+                
+                # Trigger note OFF
+                self.triggered_notes.discard(note_id)
+                self.note_ended.emit(note['pitch'])
+    
+    def reset_triggers(self):
+        """Reset all triggered notes (call when stopping/restarting playback)"""
+        self.triggered_notes.clear()
+        self.last_check_time = -1.0
+    
+    def set_playback_time(self, time_sec):
+        """Update current playback time and auto-scroll"""
+        self.current_time = time_sec
+        
+        # Auto-scroll to keep red line at left margin + some offset
+        # Add preparation time to match note positions
+        target_x = (time_sec + self.preparation_time) * self.pixels_per_second
+        playback_line_x = self.left_margin + 50  # Position of red line
+        self.scroll_offset = target_x - playback_line_x
+        
+        # Check for notes crossing the red line and trigger them
+        self._check_and_trigger_notes(time_sec)
         
         self.update()
     
@@ -356,9 +442,6 @@ class StaffWidget(QWidget):
             # Draw staff lines (5 lines for treble clef)
             self.draw_staff(painter)
             
-            # Draw time divisions
-            self.draw_time_divisions(painter)
-            
             # Draw notes
             self.draw_notes(painter)
             
@@ -373,20 +456,20 @@ class StaffWidget(QWidget):
         pen = QPen(QColor("black"), 2)
         painter.setPen(pen)
         
-        # Calculate staff position
-        center_y = self.height() / 2
+        # Calculate staff position - FIXED position matching pitch_to_y()
+        staff_center_y = self.top_margin + (self.staff_spacing * 10)
         
         # Draw 5 lines (standard staff) - start from left margin
         # Lines from bottom to top: E4, G4, B4, D5, F5
         for i in range(5):
-            y = center_y - (2 * self.staff_spacing) + (i * self.staff_spacing)
+            y = staff_center_y - (2 * self.staff_spacing) + (i * self.staff_spacing)
             painter.drawLine(self.left_margin, int(y), self.width(), int(y))
         
         # Draw treble clef symbol - FIXED on the left, doesn't scroll
         # In Bravura/SMuFL, treble clef is Unicode E050
         painter.setFont(QFont(self.music_font_family, 80))
         clef_x = 10  # Fixed position
-        clef_y = center_y - self.staff_spacing  # Position on second line from bottom (G4)
+        clef_y = staff_center_y - self.staff_spacing  # Position on second line from bottom (G4)
         painter.drawText(int(clef_x), int(clef_y + 50), "\uE050")
     
     def draw_time_divisions(self, painter):
@@ -438,12 +521,19 @@ class StaffWidget(QWidget):
                 finger = self.get_finger_for_note(note_id)
                 finger_color = self.finger_colors.get(finger, QColor(128, 128, 128))
                 
-                # Choose color based on state - check if THIS specific note is active
-                if note_id in self.active_note_ids:
-                    color = finger_color  # Use finger color when playing
-                    color = color.lighter(120)  # Brighten for visibility
+                # Choose color based on settings and state
+                if self.show_note_colors:
+                    # Use finger colors
+                    if note_id in self.active_note_ids:
+                        color = finger_color  # Use finger color when playing
+                        color = color.lighter(120)  # Brighten for visibility
+                    else:
+                        color = finger_color  # Always use finger color
                 else:
-                    color = finger_color  # Always use finger color
+                    # Use black for all notes
+                    color = QColor(0, 0, 0)  # Black
+                    if note_id in self.active_note_ids:
+                        color = QColor(50, 50, 50)  # Slightly lighter when active
                 
                 # Draw ledger lines first (if needed)
                 self.draw_ledger_lines(painter, note_x, note_y, 15)
@@ -482,10 +572,11 @@ class StaffWidget(QWidget):
     
     def draw_ledger_lines(self, painter, x, y, width):
         """Draw ledger lines for notes outside the staff"""
-        center_y = self.height() / 2
+        # Use FIXED staff center - same as pitch_to_y()
+        staff_center_y = self.top_margin + (self.staff_spacing * 10)
         # Staff extends 2 lines above and below center
-        staff_top = center_y - (2 * self.staff_spacing)
-        staff_bottom = center_y + (2 * self.staff_spacing)
+        staff_top = staff_center_y - (2 * self.staff_spacing)
+        staff_bottom = staff_center_y + (2 * self.staff_spacing)
         
         painter.setPen(QPen(QColor("black"), 1.5))
         

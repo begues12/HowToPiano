@@ -62,13 +62,13 @@ class ProgressBar(QWidget):
         bar_y = (height - bar_height) // 2
         painter.setBrush(QBrush(QColor(52, 73, 94)))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(10, bar_y, width - 20, bar_height, 4, 4)
+        painter.drawRoundedRect(10, bar_y, width - 20, bar_height, 4.0, 4.0)
         
         if self.total_duration > 0:
             # Progress bar filled portion
-            progress_width = ((width - 20) * self.current_time / self.total_duration)
+            progress_width = int((width - 20) * self.current_time / self.total_duration)
             painter.setBrush(QBrush(QColor(52, 152, 219)))  # Blue progress
-            painter.drawRoundedRect(10, bar_y, progress_width, bar_height, 4, 4)
+            painter.drawRoundedRect(10, bar_y, progress_width, bar_height, 4.0, 4.0)
             
             # Time markers every 10 seconds
             marker_interval = 10.0  # seconds
