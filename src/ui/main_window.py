@@ -121,6 +121,9 @@ class MainWindow(QMainWindow):
         # Apply preparation time from settings
         self.score_view.preparation_time = self.settings.get("preparation_time", 3)
         
+        # Disable proportional spacing (using pure time-based triggering)
+        self.score_view.use_proportional_spacing = False
+        
         main_v_layout.addWidget(self.piano_widget)
 
         # Arduino (Mock by default for safety, user can configure)
@@ -508,18 +511,15 @@ class MainWindow(QMainWindow):
                 self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
                 self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
                 
-                # Recalculate pixels_per_second with correct zoom
-                tempo_factor = self.score_view.tempo_bpm / 120.0
-                self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * tempo_factor * zoom_scale
+                # Calculate pixels_per_second (for scroll speed only, not note positions)
+                # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
+                original_tempo_factor = self.score_view.tempo_bpm / 120.0
+                tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
+                self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
                 
-                # Recalculate all note positions with correct zoom
+                # Recalculate Y positions only (for staff display)
                 for note in self.score_view.notes:
-                    note['x'] = (note['time'] + self.score_view.preparation_time) * self.score_view.pixels_per_second
                     note['y'] = self.score_view.pitch_to_y(note['pitch'])
-                
-                # Reapply proportional spacing if enabled
-                if self.score_view.use_proportional_spacing:
-                    self.score_view._apply_proportional_spacing()
                 
                 print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
                 
@@ -600,6 +600,11 @@ class MainWindow(QMainWindow):
             # Start the current training mode
             self.training_manager.start()
             
+            # Start real-time playback logging
+            if hasattr(self.score_view, 'start_playback_logging'):
+                log_path = "playback_log.txt"
+                self.score_view.start_playback_logging(log_path)
+            
             # Start the timer for updates
             self.midi_engine.timer.start()
             
@@ -627,6 +632,10 @@ class MainWindow(QMainWindow):
 
     def stop_playback(self):
         """Stop current training mode and reset"""
+        # Stop playback logging
+        if hasattr(self.score_view, 'stop_playback_logging'):
+            self.score_view.stop_playback_logging()
+        
         self.training_manager.stop()
         self.midi_engine.timer.stop()
         
@@ -823,26 +832,29 @@ class MainWindow(QMainWindow):
         self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
         self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
         
-        # CRITICAL: Update pixels_per_second based on BOTH zoom AND tempo
-        # Formula: base_speed * tempo_factor * zoom_scale
-        # This ensures tempo is always respected regardless of zoom level
+        # CRITICAL: Update pixels_per_second based on zoom, original tempo, AND tempo multiplier
+        # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
+        # This ensures all three factors are always respected
         base_speed = 100
-        tempo_factor = self.score_view.tempo_bpm / 120.0
-        self.score_view.pixels_per_second = base_speed * tempo_factor * zoom_scale
+        original_tempo_factor = self.score_view.tempo_bpm / 120.0
+        tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
+        self.score_view.pixels_per_second = base_speed * original_tempo_factor * tempo_multiplier * zoom_scale
         
-        # Recalculate note positions if a song is loaded
+        # Recalculate Y positions if a song is loaded (for staff display)
         if self.score_view.notes:
             for note in self.score_view.notes:
-                # Recalculate x position with new zoom
-                x = (note['time'] + self.score_view.preparation_time) * self.score_view.pixels_per_second
-                note['x'] = x
                 # Recalculate y position with new staff spacing
                 note['y'] = self.score_view.pitch_to_y(note['pitch'])
+            
+            # Reset trigger state to prevent skipping notes
+            self.score_view.reset_triggers()
+            
             self.score_view.update()
         
         # Save settings
         self.save_settings()
-        print(f"Visual zoom changed to {value}%")
+        tempo_mult = self.settings.get("playback_tempo", 100)
+        print(f"Visual zoom changed to {value}% (scroll speed: {self.score_view.pixels_per_second:.1f} px/s, tempo: {tempo_mult}%)")
     
     def change_tempo(self, value):
         """Change playback tempo (actual speed of music)"""
@@ -858,9 +870,24 @@ class MainWindow(QMainWindow):
             for mode in self.training_manager.modes.values():
                 mode.tempo_multiplier = value / 100.0
         
+        # CRITICAL: Update scroll speed based on new tempo
+        # Formula: pixels_per_second = base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
+        # Example: Song at 90 BPM, tempo slider 50%, zoom 100%
+        #   -> pixels_per_second = 100 * (90/120) * 0.5 * 1.0 = 37.5 px/s
+        original_tempo_factor = self.score_view.tempo_bpm / 120.0
+        tempo_multiplier = value / 100.0
+        self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * self.score_view.visual_zoom_scale
+        
+        # Reset trigger state when tempo changes
+        if self.score_view.notes:
+            self.score_view.update()
+        
+        # CRITICAL: Reset trigger state to prevent skipping notes
+        self.score_view.reset_triggers()
+        
         # Save settings
         self.save_settings()
-        print(f"Playback tempo changed to {value}%")
+        print(f"Playback tempo changed to {value}% (scroll speed: {self.score_view.pixels_per_second:.1f} px/s)")
 
     def on_zoom_spinbox_changed(self, value):
         """Handle zoom spinbox value changes"""
@@ -912,18 +939,15 @@ class MainWindow(QMainWindow):
                     self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
                     self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
                     
-                    # Recalculate pixels_per_second with correct zoom
-                    tempo_factor = self.score_view.tempo_bpm / 120.0
-                    self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * tempo_factor * zoom_scale
+                    # Recalculate pixels_per_second with correct zoom AND tempo multiplier
+                    # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
+                    original_tempo_factor = self.score_view.tempo_bpm / 120.0
+                    tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
+                    self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
                     
-                    # Recalculate all note positions with correct zoom
+                    # Recalculate Y positions only (for staff display)
                     for note in self.score_view.notes:
-                        note['x'] = (note['time'] + self.score_view.preparation_time) * self.score_view.pixels_per_second
                         note['y'] = self.score_view.pitch_to_y(note['pitch'])
-                    
-                    # Reapply proportional spacing if enabled
-                    if self.score_view.use_proportional_spacing:
-                        self.score_view._apply_proportional_spacing()
                     
                     print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
                     

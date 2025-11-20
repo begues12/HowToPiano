@@ -72,6 +72,10 @@ class StaffWidget(QWidget):
         }
         self.note_fingers = {}  # {note_id: finger_number}
         
+        # Real-time playback logging
+        self.playback_log_file = None
+        self.playback_logging_enabled = False
+        
         # Red line triggering system
         self.triggered_notes = set()  # IDs of notes that have already been triggered
         self.last_check_time = -1.0  # Last time we checked for note triggers
@@ -101,9 +105,69 @@ class StaffWidget(QWidget):
         self.use_proportional_spacing = True  # Use duration-based spacing
         self.chord_stack_offset = 2  # Minimal offset for chord notes (scaled by zoom)
         
+    def export_midi_notes_to_txt(self, midi_path, output_path):
+        """Export all notes from MIDI to TXT file with T and pitch"""
+        try:
+            mid = mido.MidiFile(midi_path)
+            tempo = 500000  # Default tempo (120 BPM)
+            
+            # Extract tempo
+            for track in mid.tracks:
+                for msg in track:
+                    if hasattr(msg, 'type') and msg.type == 'set_tempo':
+                        tempo = msg.tempo
+                        break
+            
+            # Collect all notes
+            all_notes = []
+            for track_idx, track in enumerate(mid.tracks):
+                current_tick = 0
+                current_tempo = tempo
+                
+                for msg in track:
+                    # Get delta safely (some messages might not have it)
+                    delta = getattr(msg, 'delta', 0)
+                    current_tick += delta
+                    time_sec = mido.tick2second(current_tick, mid.ticks_per_beat, current_tempo)
+                    
+                    if hasattr(msg, 'type'):
+                        if msg.type == 'set_tempo':
+                            current_tempo = msg.tempo
+                        elif msg.type == 'note_on' and hasattr(msg, 'velocity') and msg.velocity > 0:
+                            all_notes.append({
+                                'time': time_sec,
+                                'pitch': msg.note,
+                                'velocity': msg.velocity
+                            })
+            
+            # Sort by time
+            all_notes.sort(key=lambda x: x['time'])
+            
+            # Write to TXT file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write("# MIDI Notes Export\n")
+                f.write("# Format: T (seconds) | Pitch (MIDI note number) | Velocity\n")
+                f.write("# " + "="*60 + "\n\n")
+                
+                for note in all_notes:
+                    f.write(f"T={note['time']:.4f}s | Pitch={note['pitch']} | Vel={note['velocity']}\n")
+            
+            print(f"Exported {len(all_notes)} notes to {output_path}")
+            return True
+            
+        except Exception as e:
+            print(f"Error exporting MIDI notes: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     def load_midi_notes(self, midi_path):
         """Load notes from MIDI file"""
         try:
+            # Export notes to TXT automatically
+            txt_path = midi_path.replace('.mid', '_notes.txt').replace('.midi', '_notes.txt')
+            self.export_midi_notes_to_txt(midi_path, txt_path)
+            
             mid = mido.MidiFile(midi_path)
             self.notes = []
             
@@ -279,11 +343,7 @@ class StaffWidget(QWidget):
             # Group notes for beaming (eighth and sixteenth notes that should be connected)
             self._create_beam_groups()
             
-            # Apply proportional spacing based on note durations
-            if self.use_proportional_spacing:
-                self._apply_proportional_spacing()
-            
-            # Log first few notes for debugging (disabled for production)
+            # Log notes loaded (X positions not needed for time-based triggering)
             print(f"StaffWidget: Loaded {len(self.notes)} notes in {len(self.chords)} chords")
             # if self.notes:
             #     print(f"[STAFF] First note: time={self.notes[0]['time']:.3f}s, pitch={self.notes[0]['pitch']}, x={self.notes[0]['x']:.1f}")
@@ -413,49 +473,7 @@ class StaffWidget(QWidget):
         
         return None  # No accidental needed for white keys
     
-    def _apply_proportional_spacing(self):
-        """Apply proportional spacing to notes based on their durations (IMPROVED)"""
-        if not self.notes or len(self.notes) < 2:
-            return
-        
-        # IMPROVED: Better spacing algorithm based on musical time
-        # Instead of using multipliers, use actual musical time with a scaling factor
-        
-        # Time-based spacing: each second of musical time = pixels_per_second pixels
-        # But we add minimum spacing to prevent notes from being too close
-        
-        # First note starts at preparation time
-        self.notes[0]['x'] = (self.notes[0]['time'] + self.preparation_time) * self.pixels_per_second
-        
-        # Minimum spacing between notes (prevent overlap)
-        min_spacing = 25 * self.visual_zoom_scale
-        
-        for i in range(1, len(self.notes)):
-            prev_note = self.notes[i - 1]
-            current_note = self.notes[i]
-            
-            # Calculate position based on musical time
-            time_based_x = (current_note['time'] + self.preparation_time) * self.pixels_per_second
-            
-            # Check if this is part of a chord (notes at same time)
-            time_gap = current_note['time'] - prev_note['time']
-            is_chord = abs(time_gap) < 0.02  # 20ms tolerance
-            
-            if is_chord:
-                # Chord notes: minimal horizontal spacing (stack vertically)
-                # Slight offset based on pitch to avoid complete overlap
-                pitch_diff = abs(current_note['pitch'] - prev_note['pitch'])
-                chord_offset = min(pitch_diff * 0.5, 3) * self.visual_zoom_scale
-                current_note['x'] = prev_note['x'] + chord_offset
-            else:
-                # Use time-based position, but ensure minimum spacing
-                # This respects the tempo-adjusted pixels_per_second
-                min_allowed_x = prev_note['x'] + min_spacing
-                
-                # Use the greater of: time-based position OR minimum spacing position
-                current_note['x'] = max(time_based_x, min_allowed_x)
-        
-        print(f"StaffWidget: Proportional spacing applied to {len(self.notes)} notes")
+    # Proportional spacing removed - using pure time-based triggering
     
     def _create_beam_groups(self):
         """Group consecutive eighth and sixteenth notes for beaming based on metric structure"""
@@ -567,72 +585,103 @@ class StaffWidget(QWidget):
         self.update()
     
     def _check_and_trigger_notes(self, current_time):
-        """Check if any notes are crossing the red line and trigger them (OPTIMIZED)"""
+        """
+        TIME-BASED NOTE TRIGGER SYSTEM
+        
+        Uses ONLY musical time from MIDI file to trigger notes.
+        No visual position calculations - pure time synchronization.
+        
+        Formula: Trigger when current_time >= note_time
+        """
         if not self.notes:
             return
         
-        # CRITICAL FIX: Don't trigger notes during preparation phase (negative time)
-        # Notes need to "travel" visually before reaching the red line
-        # Only start triggering when current_time >= 0
-        if current_time < -0.01:  # Allow small tolerance for floating point
-            return  # Skip logging during prep phase - too verbose
+        # Tolerance for timing (50ms window to catch notes)
+        trigger_tolerance = 0.050
         
-        # OPTIMIZATION: Track current index to avoid checking old notes
-        if not hasattr(self, '_trigger_check_index'):
-            self._trigger_check_index = 0
-        
-        # CRITICAL: Use asymmetric tolerance
-        # - Allow triggering AFTER the note time (late forgiveness: 100ms)
-        # - Do NOT allow triggering BEFORE the note time (early rejection)
-        trigger_after_tolerance = 0.10  # Can trigger up to 100ms late
-        
-        # OPTIMIZATION: Only check notes near current time (skip notes far in past/future)
-        # Start from last checked index, notes are sorted by time
-        start_idx = self._trigger_check_index
-        end_time_window = current_time + trigger_after_tolerance
-        
-        # Check notes starting from last position
-        for i in range(start_idx, len(self.notes)):
-            note = self.notes[i]
-            note_time = note['time']
+        for note in self.notes:
             note_id = note['id']
+            note_time = note['time']
+            note_duration = note['duration']
+            note_end_time = note_time + note_duration
             
-            # EARLY EXIT: If note is too far in future, stop checking
-            if note_time > end_time_window:
-                break
-            
-            # Skip notes that are too far in the past (more than 2 seconds ago)
-            if note_time < current_time - 2.0:
-                self._trigger_check_index = i + 1  # Move forward
+            # Skip notes far in the past (optimization)
+            if note_end_time < current_time - 1.0:
                 continue
             
-            note_end_time = note_time + note['duration']
+            # Skip notes far in the future (optimization)
+            # Changed from 'break' to 'continue' to avoid skipping notes
+            # at the same time or within tolerance window
+            if note_time > current_time + trigger_tolerance:
+                continue
             
-            # Check if note should start (reaches red line)
-            # MUST be: note_time <= current_time < note_time + tolerance
-            if (current_time >= note_time and 
-                current_time < note_time + trigger_after_tolerance and
+            # === NOTE ON LOGIC ===
+            # Trigger when current time reaches note time
+            if (note_time <= current_time <= note_time + trigger_tolerance and
                 note_id not in self.triggered_notes):
                 
-                # Trigger note ON
+                # Mark as triggered
                 self.triggered_notes.add(note_id)
-                velocity = 80  # Default velocity
+                
+                # Play sound
+                velocity = 80
                 self.note_triggered.emit(note['pitch'], velocity)
                 
-            # Check if note should end
+                # Log to real-time playback file if enabled
+                if self.playback_logging_enabled and self.playback_log_file:
+                    try:
+                        self.playback_log_file.write(f"NOTE_ON | T={current_time:.4f}s | Pitch={note['pitch']} | Scheduled={note_time:.4f}s | Diff={(current_time-note_time)*1000:.1f}ms\n")
+                        self.playback_log_file.flush()
+                    except:
+                        pass
+            
+            # === NOTE OFF LOGIC ===
+            # End note when duration expires
             elif (current_time >= note_end_time and
                   note_id in self.triggered_notes):
                 
-                # Trigger note OFF
+                # Stop sound
                 self.triggered_notes.discard(note_id)
                 self.note_ended.emit(note['pitch'])
+                
+                # Log to real-time playback file if enabled
+                if self.playback_logging_enabled and self.playback_log_file:
+                    try:
+                        self.playback_log_file.write(f"NOTE_OFF | T={current_time:.4f}s | Pitch={note['pitch']} | Scheduled={note_end_time:.4f}s\n")
+                        self.playback_log_file.flush()
+                    except:
+                        pass
+    
+    def start_playback_logging(self, output_path):
+        """Start logging notes as they play in real-time"""
+        try:
+            self.playback_log_file = open(output_path, 'w', encoding='utf-8')
+            self.playback_log_file.write("# Real-Time Playback Log\n")
+            self.playback_log_file.write("# Format: NOTE_ON/OFF | T (actual time) | Pitch | Scheduled time | Diff\n")
+            self.playback_log_file.write("# " + "="*70 + "\n\n")
+            self.playback_logging_enabled = True
+            print(f"Started playback logging to {output_path}")
+        except Exception as e:
+            print(f"Error starting playback logging: {e}")
+            self.playback_logging_enabled = False
+    
+    def stop_playback_logging(self):
+        """Stop logging playback"""
+        self.playback_logging_enabled = False
+        if self.playback_log_file:
+            try:
+                self.playback_log_file.close()
+                print("Playback logging stopped")
+            except:
+                pass
+            self.playback_log_file = None
     
     def reset_triggers(self):
         """Reset all triggered notes (call when stopping/restarting playback)"""
         self.triggered_notes.clear()
         self.last_check_time = -1.0
-        # Reset optimization index
-        self._trigger_check_index = 0
+        if hasattr(self, '_last_trigger_time'):
+            self._last_trigger_time = -999.0
     
     def go_to_start(self):
         """Reset to start position with preparation time offset"""
@@ -677,14 +726,9 @@ class StaffWidget(QWidget):
         self.scroll_offset = target_x - playback_line_x
         self.scroll_offset = max(0, self.scroll_offset)
         
-        # OPTIMIZATION: Only check triggers if significant time has passed (reduce from 60Hz to ~30Hz)
-        if not hasattr(self, '_last_trigger_check'):
-            self._last_trigger_check = -999
-        
-        # Check triggers every 30ms instead of every tick
-        if abs(time_sec - self._last_trigger_check) >= 0.030:
-            self._check_and_trigger_notes(time_sec)
-            self._last_trigger_check = time_sec
+        # Check triggers on EVERY update to avoid missing notes
+        # This is critical for fast passages with notes close together
+        self._check_and_trigger_notes(time_sec)
         
         # Only update if there's a visible change (optimization)
         # Update if: scroll changed by more than 1px OR time crossed a note boundary
@@ -692,26 +736,36 @@ class StaffWidget(QWidget):
             self.update()
     
     def note_on(self, pitch):
-        """Highlight the specific note(s) with this pitch at current time"""
-        # Find notes with this pitch that are at the current playback time
-        tolerance = 0.05  # 50ms tolerance
+        """Highlight the specific note(s) with this pitch when triggered"""
+        # CRITICAL: Find notes with this pitch that should be triggered NOW
+        # This is called from the trigger system, so we know the timing is correct
+        # We need to find the note that matches this pitch and is closest to current_time
+        
+        tolerance = 0.1  # 100ms tolerance to find the right note
+        closest_note = None
+        min_diff = float('inf')
         
         for note in self.notes:
-            if note['pitch'] == pitch and abs(note['time'] - self.current_time) < tolerance:
-                note_id = note['id']
-                chord_id = note.get('chord_id')
-                
-                # Activate this note
-                self.active_note_ids.add(note_id)
-                
-                # If it's part of a chord, activate all notes in that chord
-                if chord_id is not None:
-                    chord = next((c for c in self.chords if c['id'] == chord_id), None)
-                    if chord:
-                        for cid in chord['note_ids']:
-                            self.active_note_ids.add(cid)
-                        self.active_chord_id = chord_id
-                break
+            if note['pitch'] == pitch:
+                time_diff = abs(note['time'] - self.current_time)
+                if time_diff < tolerance and time_diff < min_diff:
+                    closest_note = note
+                    min_diff = time_diff
+        
+        if closest_note:
+            note_id = closest_note['id']
+            chord_id = closest_note.get('chord_id')
+            
+            # Activate this note
+            self.active_note_ids.add(note_id)
+            
+            # If it's part of a chord, activate all notes in that chord
+            if chord_id is not None:
+                chord = next((c for c in self.chords if c['id'] == chord_id), None)
+                if chord:
+                    for cid in chord['note_ids']:
+                        self.active_note_ids.add(cid)
+                    self.active_chord_id = chord_id
         
         self.update()
     
@@ -775,17 +829,11 @@ class StaffWidget(QWidget):
             # Draw bar lines (measures)
             self.draw_barlines(painter)
             
-            # Draw beams first (behind notes)
-            self.draw_beams(painter)
-            
-            # Draw notes
-            self.draw_notes(painter)
+            # Draw note heads (simple black circles)
+            self.draw_simple_notes(painter)
             
             # Draw playback cursor
             self.draw_cursor(painter)
-            
-            # Draw time labels
-            self.draw_time_labels(painter)
     
     def draw_header(self, painter):
         """Draw professional header with title and composer"""
@@ -920,7 +968,7 @@ class StaffWidget(QWidget):
             time_sig_x = key_sig_x + (40 * self.visual_zoom_scale)
             self.draw_time_signature(painter, time_sig_x, staff_center_y)
             
-            self.draw_tempo_marking(painter, time_sig_x + (50 * self.visual_zoom_scale), staff_center_y - (3 * self.staff_spacing))
+            self.draw_tempo_marking(painter, time_sig_x + (50 * self.visual_zoom_scale), staff_center_y - (7 * self.staff_spacing))
     
     def draw_key_signature(self, painter, x, center_y, clef_type):
         """Draw key signature (sharps or flats)"""
@@ -1591,6 +1639,109 @@ class StaffWidget(QWidget):
                                int(x + width), int(line_y))
                 line_y += self.staff_spacing
     
+    def draw_simple_notes(self, painter):
+        """Draw simple note heads (black circles) without stems or beams"""
+        if not self.notes:
+            return
+        
+        # Pre-calculate values for optimization
+        scroll = self.scroll_offset
+        left_margin = self.left_margin
+        screen_width = self.width() + 50
+        
+        # Note head size
+        note_head_width = 8 * self.visual_zoom_scale
+        note_head_height = 6 * self.visual_zoom_scale
+        
+        # Set up painter for note heads
+        painter.setBrush(QColor(0, 0, 0))  # Black fill
+        painter.setPen(Qt.PenStyle.NoPen)  # No outline
+        
+        for note in self.notes:
+            # Calculate X position based on time
+            note_x = left_margin + (note['time'] + self.preparation_time) * self.pixels_per_second - scroll
+            
+            # Skip notes outside visible area (optimization)
+            if note_x < left_margin - 100:
+                continue
+            if note_x > screen_width + 100:
+                break
+            
+            # Only draw notes visible on screen
+            if note_x >= left_margin and note_x <= screen_width:
+                note_y = note['y']
+                
+                # Draw ledger lines if note is outside staff
+                self.draw_ledger_lines_for_note(painter, note_x, note['pitch'])
+                
+                # Draw note head as filled ellipse (slightly tilted for traditional look)
+                painter.save()
+                painter.translate(note_x, note_y)
+                painter.rotate(-20)  # Slight rotation for traditional note head appearance
+                painter.drawEllipse(QPointF(0, 0), note_head_width, note_head_height)
+                painter.restore()
+    
+    def draw_ledger_lines_for_note(self, painter, x, pitch):
+        """Draw ledger lines for notes outside the staff"""
+        ledger_width = 12 * self.visual_zoom_scale
+        ledger_pen = QPen(QColor(25, 25, 25), 1.3 * self.visual_zoom_scale)
+        painter.setPen(ledger_pen)
+        
+        if self.clef_type == "grand":
+            # Grand staff ledger lines
+            staff_gap = 3 * self.staff_spacing
+            total_staff_height = 8 * self.staff_spacing + staff_gap
+            treble_center_y = (self.height() - total_staff_height) / 2 + 2 * self.staff_spacing
+            bass_center_y = treble_center_y + 4 * self.staff_spacing + staff_gap
+            
+            # Treble staff (top): C4 (middle C) = line 0, goes up
+            # Ledger lines above treble staff (A5+ or 81+)
+            if pitch >= 81:  # A5 and above
+                lines_needed = (pitch - 81) // 2 + 1
+                for i in range(lines_needed):
+                    ledger_y = treble_center_y - (2 * self.staff_spacing) - ((i + 1) * self.staff_spacing)
+                    painter.drawLine(int(x - ledger_width), int(ledger_y), 
+                                   int(x + ledger_width), int(ledger_y))
+            
+            # Ledger lines below treble staff / Middle C area (B4 or 71)
+            if 69 <= pitch <= 71:  # A4, A#4, B4 (around middle C)
+                ledger_y = treble_center_y + (2 * self.staff_spacing) + self.staff_spacing
+                painter.drawLine(int(x - ledger_width), int(ledger_y), 
+                               int(x + ledger_width), int(ledger_y))
+            
+            # Ledger lines below bass staff (E2- or 52-)
+            if pitch <= 52:  # E2 and below
+                lines_needed = (52 - pitch) // 2 + 1
+                for i in range(lines_needed):
+                    ledger_y = bass_center_y + (2 * self.staff_spacing) + ((i + 1) * self.staff_spacing)
+                    painter.drawLine(int(x - ledger_width), int(ledger_y), 
+                                   int(x + ledger_width), int(ledger_y))
+            
+            # Ledger lines above bass staff / Middle C area
+            if 67 <= pitch <= 69:  # G4, G#4, A4
+                ledger_y = bass_center_y - (2 * self.staff_spacing) - self.staff_spacing
+                painter.drawLine(int(x - ledger_width), int(ledger_y), 
+                               int(x + ledger_width), int(ledger_y))
+        else:
+            # Single treble staff
+            staff_center_y = self.height() / 2
+            
+            # Ledger lines above staff (A5+ or 81+)
+            if pitch >= 81:
+                lines_needed = (pitch - 81) // 2 + 1
+                for i in range(lines_needed):
+                    ledger_y = staff_center_y - (2 * self.staff_spacing) - ((i + 1) * self.staff_spacing)
+                    painter.drawLine(int(x - ledger_width), int(ledger_y), 
+                                   int(x + ledger_width), int(ledger_y))
+            
+            # Ledger lines below staff (C4- or 60-)
+            if pitch <= 60:
+                lines_needed = (60 - pitch) // 2 + 1
+                for i in range(lines_needed):
+                    ledger_y = staff_center_y + (2 * self.staff_spacing) + ((i + 1) * self.staff_spacing)
+                    painter.drawLine(int(x - ledger_width), int(ledger_y), 
+                                   int(x + ledger_width), int(ledger_y))
+    
     def draw_cursor(self, painter):
         """Draw vertical line showing current playback position with current measure highlight"""
         cursor_x = self.left_margin + (50 * self.visual_zoom_scale)
@@ -1639,6 +1790,20 @@ class StaffWidget(QWidget):
         painter.setPen(cursor_pen)
         painter.drawLine(int(cursor_x), int(treble_top - self.staff_spacing), 
                         int(cursor_x), int(bass_bottom + self.staff_spacing))
+        
+        # DEBUG: Draw small markers on notes that SHOULD be at red line right now
+        # This helps verify visual-audio sync
+        debug_visual_sync = False  # Set to True to enable visual debugging
+        if debug_visual_sync:
+            tolerance = 0.03  # 30ms
+            for note in self.notes:
+                if abs(note['time'] - self.current_time) < tolerance:
+                    # This note should be right at the red line
+                    note_visual_x = self.left_margin + note['x'] - self.scroll_offset
+                    note_y = note['y']
+                    # Draw a small indicator
+                    painter.setPen(QPen(QColor(0, 255, 0), 3))
+                    painter.drawEllipse(int(note_visual_x - 3), int(note_y - 3), 6, 6)
     
     def draw_time_labels(self, painter):
         """Draw time markers"""
