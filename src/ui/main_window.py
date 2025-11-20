@@ -1242,6 +1242,8 @@ class MainWindow(QMainWindow):
         try:
             with open(self.settings_file, 'w') as f:
                 json.dump(self.settings, f, indent=2)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
     
     def detect_arduino_connection(self):
         """Detect Arduino connection automatically"""
@@ -1314,7 +1316,7 @@ class MainWindow(QMainWindow):
         """Update Arduino connection indicator button"""
         if self.arduino_connected:
             self.btn_arduino.setText("\ud83d\udd0c")
-            self.btn_arduino.setStyleSheet(\"\"\"
+            self.btn_arduino.setStyleSheet("""
                 QPushButton {
                     background-color: #27ae60;
                     border: 2px solid #2ecc71;
@@ -1327,11 +1329,11 @@ class MainWindow(QMainWindow):
                 QPushButton:hover {
                     background-color: #2ecc71;
                 }
-            \"\"\")
+            """)
             self.btn_arduino.setToolTip("Arduino: Connected - Click to open console")
         else:
             self.btn_arduino.setText("\ud83d\udd0c")
-            self.btn_arduino.setStyleSheet(\"\"\"
+            self.btn_arduino.setStyleSheet("""
                 QPushButton {
                     background-color: #c0392b;
                     border: 2px solid #e74c3c;
@@ -1344,7 +1346,7 @@ class MainWindow(QMainWindow):
                 QPushButton:hover {
                     background-color: #e74c3c;
                 }
-            \"\"\")
+            """)
             self.btn_arduino.setToolTip("Arduino: Disconnected")
     
     def send_arduino_led_on(self, midi_note, velocity=100):
@@ -1412,6 +1414,39 @@ class MainWindow(QMainWindow):
         self.arduino_console_dialog.activateWindow()
     
     def closeEvent(self, event):
+        """Clean shutdown of all components"""
+        print("🛑 Cerrando aplicación...")
+        
+        try:
+            # 1. Stop MIDI playback
+            if hasattr(self, 'midi_engine') and self.midi_engine:
+                print("  - Deteniendo MIDI engine...")
+                self.midi_engine.stop()
+                self.midi_engine.cleanup()
+            
+            # 2. Stop all audio
+            if hasattr(self, 'synth') and self.synth:
+                print("  - Deteniendo sintetizador...")
+                self.synth.all_notes_off()
+                self.synth.cleanup()
+            
+            # 3. Stop Arduino thread
+            if hasattr(self, 'arduino') and self.arduino:
+                print("  - Deteniendo Arduino...")
+                self.arduino.stop()
+            
+            if hasattr(self, 'arduino_thread') and self.arduino_thread:
+                self.arduino_thread.quit()
+                self.arduino_thread.wait(1000)  # Wait max 1 second
+            
+            # 4. Save settings
+            self.save_settings()
+            print("✅ Aplicación cerrada correctamente")
+            
+        except Exception as e:
+            print(f"⚠️ Error al cerrar: {e}")
+        finally:
+            event.accept()
         """Clean shutdown of all components"""
         print("🛑 Cerrando aplicación...")
         
