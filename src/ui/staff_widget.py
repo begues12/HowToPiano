@@ -37,7 +37,7 @@ class StaffWidget(QWidget):
         self.active_note_ids = set()  # IDs of notes currently being played
         self.played_note_color = QColor(30, 144, 255)  # Dodger blue (professional highlight)
         self.active_chord_id = None  # Currently active chord group
-        self.current_time = 0  # Current playback time in seconds
+        self.current_time = -3  # Current playback time in seconds
         self.scroll_offset = 0  # Horizontal scroll position
         
         # Staff parameters
@@ -165,8 +165,6 @@ class StaffWidget(QWidget):
         """Load notes from MIDI file"""
         try:
             # Export notes to TXT automatically
-            txt_path = midi_path.replace('.mid', '_notes.txt').replace('.midi', '_notes.txt')
-            self.export_midi_notes_to_txt(midi_path, txt_path)
             
             mid = mido.MidiFile(midi_path)
             self.notes = []
@@ -706,67 +704,21 @@ class StaffWidget(QWidget):
         old_time = self.current_time
         self.current_time = time_sec
         
-        # Log every 0.5 seconds to avoid spam (disabled for production)
-        # if not hasattr(self, '_last_log_time'):
-        #     self._last_log_time = -999
-        # if abs(time_sec - self._last_log_time) >= 0.5:
-        #     print(f"[STAFF] set_playback_time: {time_sec:.3f}s (prep_time={self.preparation_time}s)")
-        #     self._last_log_time = time_sec
-        
-        # Calculate where notes at this time should appear
-        # Notes are positioned at: left_margin + (note_time + preparation_time) * pixels_per_second
         target_x = (time_sec + self.preparation_time) * self.pixels_per_second
         playback_line_x = self.left_margin + (50 * self.visual_zoom_scale)  # Position of red line, scaled
-        
-        # CRITICAL FIX: Always calculate scroll, even during negative time (preparation phase)
-        # When time_sec = -3, target_x = 0, so scroll_offset = 0 - playback_line_x (negative, clamped to 0)
-        # When time_sec = 0, target_x = 3*pixels_per_second, scroll_offset increases
-        # This makes notes scroll smoothly from right to left
         old_scroll = self.scroll_offset
         self.scroll_offset = target_x - playback_line_x
         self.scroll_offset = max(0, self.scroll_offset)
-        
-        # Check triggers on EVERY update to avoid missing notes
-        # This is critical for fast passages with notes close together
         self._check_and_trigger_notes(time_sec)
-        
-        # Only update if there's a visible change (optimization)
-        # Update if: scroll changed by more than 1px OR time crossed a note boundary
         if abs(self.scroll_offset - old_scroll) > 0.5 or abs(time_sec - old_time) > 0.01:
             self.update()
     
     def note_on(self, pitch):
-        """Highlight the specific note(s) with this pitch when triggered"""
-        # CRITICAL: Find notes with this pitch that should be triggered NOW
-        # This is called from the trigger system, so we know the timing is correct
-        # We need to find the note that matches this pitch and is closest to current_time
-        
-        tolerance = 0.1  # 100ms tolerance to find the right note
-        closest_note = None
-        min_diff = float('inf')
-        
+        """Highlight specific note(s) with this pitch"""
+        # Find and activate notes with this pitch
         for note in self.notes:
             if note['pitch'] == pitch:
-                time_diff = abs(note['time'] - self.current_time)
-                if time_diff < tolerance and time_diff < min_diff:
-                    closest_note = note
-                    min_diff = time_diff
-        
-        if closest_note:
-            note_id = closest_note['id']
-            chord_id = closest_note.get('chord_id')
-            
-            # Activate this note
-            self.active_note_ids.add(note_id)
-            
-            # If it's part of a chord, activate all notes in that chord
-            if chord_id is not None:
-                chord = next((c for c in self.chords if c['id'] == chord_id), None)
-                if chord:
-                    for cid in chord['note_ids']:
-                        self.active_note_ids.add(cid)
-                    self.active_chord_id = chord_id
-        
+                self.active_note_ids.add(note['id'])
         self.update()
     
     def note_off(self, pitch):
@@ -796,18 +748,7 @@ class StaffWidget(QWidget):
         self.update()
     
     def paintEvent(self, event):
-        # Log paint events to check frequency (disabled for production)
-        # if not hasattr(self, '_paint_count'):
-        #     self._paint_count = 0
-        #     self._paint_start_time = time.time()
-        # self._paint_count += 1
-        # 
-        # # Log paint rate every 60 frames
-        # if self._paint_count % 60 == 0:
-        #     elapsed = time.time() - self._paint_start_time
-        #     fps = self._paint_count / elapsed if elapsed > 0 else 0
-        #     print(f"[STAFF] Paint events: {self._paint_count} in {elapsed:.1f}s ({fps:.1f} FPS)")
-        
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -828,9 +769,6 @@ class StaffWidget(QWidget):
             
             # Draw bar lines (measures)
             self.draw_barlines(painter)
-            
-            # Draw note heads (simple black circles)
-            self.draw_simple_notes(painter)
             
             # Draw playback cursor
             self.draw_cursor(painter)
@@ -1333,120 +1271,6 @@ class StaffWidget(QWidget):
                 painter.drawText(int(x - 15), int(bottom_y + 20), time_text)
                 painter.setPen(QPen(QColor(200, 200, 200), 1))
     
-    def draw_notes(self, painter):
-        """Draw all notes as ellipses (OPTIMIZED)"""
-        drawn_count = 0
-        remaining_count = 0  # Notes that haven't been played yet
-        playback_line_x = self.left_margin + (50 * self.visual_zoom_scale)  # Position of red line, scaled
-        
-        # OPTIMIZATION: Pre-calculate commonly used values
-        scroll = self.scroll_offset
-        left_margin = self.left_margin
-        screen_width = self.width() + 50
-        zoom = self.visual_zoom_scale
-        
-        # OPTIMIZATION: Build chord lookup cache once per frame
-        if not hasattr(self, '_chord_cache') or self._chord_cache_frame != id(painter):
-            self._chord_cache = {c['id']: c for c in self.chords}
-            self._chord_cache_frame = id(painter)
-        
-        for note in self.notes:
-            note_x = note['x'] - scroll
-            
-            # OPTIMIZATION: Early skip for notes far off screen
-            if note_x < left_margin - 100:
-                continue
-            if note_x > screen_width + 100:
-                break  # Notes are sorted, no need to check further
-            
-            # Count notes that haven't passed the red line yet
-            if note_x >= playback_line_x:
-                remaining_count += 1
-            
-            # Only draw notes that are visible on screen
-            if note_x >= left_margin and note_x <= screen_width:
-                note_y = note['y']
-                note_id = note['id']
-                
-                # Get finger assignment for this note
-                finger = self.get_finger_for_note(note_id)
-                finger_color = self.finger_colors.get(finger, QColor(128, 128, 128))
-                
-                # Choose color based on settings and state
-                if note_id in self.active_note_ids:
-                    # Use configured played note color when active (bright and visible)
-                    color = self.played_note_color
-                    # Add glow effect for active notes
-                    glow_color = QColor(self.played_note_color.red(), 
-                                      self.played_note_color.green(), 
-                                      self.played_note_color.blue(), 50)
-                    painter.setPen(QPen(glow_color, 8 * self.visual_zoom_scale))
-                    painter.drawEllipse(QPointF(note_x, note_y), 
-                                      12 * self.visual_zoom_scale, 
-                                      9 * self.visual_zoom_scale)
-                elif self.show_note_colors:
-                    # Use finger colors when not playing
-                    color = finger_color
-                else:
-                    # Use professional black for all notes
-                    color = QColor(30, 30, 30)
-                
-                # Draw ledger lines first (if needed)
-                # Adjust ledger width for chord notes
-                chord_id = note.get('chord_id')
-                # OPTIMIZATION: Use cached chord lookup instead of linear search
-                chord = self._chord_cache.get(chord_id) if chord_id is not None else None
-                is_in_chord = chord and len(chord['note_ids']) > 1
-                
-                ledger_width = (18 if is_in_chord else 15) * self.visual_zoom_scale
-                self.draw_ledger_lines(painter, note_x, note_y, ledger_width)
-                
-                # Draw accidental (sharp/flat) if needed
-                accidental = note.get('accidental')
-                if accidental:
-                    self.draw_accidental(painter, note_x, note_y, accidental, color)
-                
-                # OPTIMIZATION: Use cached beam group membership lookup
-                if not hasattr(self, '_beam_note_set'):
-                    self._beam_note_set = set()
-                    for group in self.beam_groups:
-                        self._beam_note_set.update(group)
-                in_beam_group = note_id in self._beam_note_set
-                
-                # For chords, slightly adjust X position for visual clarity
-                adjusted_x = note_x
-                if is_in_chord and chord:
-                    # Find position in chord
-                    note_index = chord['note_ids'].index(note_id)
-                    if note_index > 0:
-                        # Alternate positioning for readability
-                        if note_index % 2 == 1:
-                            adjusted_x = note_x + (1 * self.visual_zoom_scale)
-                
-                # Draw note based on duration
-                self.draw_note_shape(painter, adjusted_x, note_y, note['duration'], note['pitch'], color, note_id, in_beam_group)
-                
-                drawn_count += 1
-        
-        # Show progress in a more professional way
-        played_count = len(self.notes) - remaining_count
-        progress_percent = int((played_count / len(self.notes) * 100)) if len(self.notes) > 0 else 0
-        
-        # Draw subtle progress bar
-        bar_width = 150
-        bar_height = 6
-        bar_x = self.width() - bar_width - 15
-        bar_y = self.height() - 25
-        
-        # Background bar
-        painter.fillRect(int(bar_x), int(bar_y), bar_width, bar_height, QColor(220, 220, 220))
-        # Progress bar
-        painter.fillRect(int(bar_x), int(bar_y), int(bar_width * progress_percent / 100), bar_height, QColor(100, 180, 100))
-        
-        # Progress text
-        painter.setPen(QPen(QColor(80, 80, 80), 1))
-        painter.setFont(QFont("Arial", 9))
-        painter.drawText(int(bar_x), int(bar_y - 5), f"{played_count}/{len(self.notes)} notes ({progress_percent}%)")
     
     def draw_accidental(self, painter, x, y, accidental_type, color):
         """Draw sharp, flat, or natural symbol before the note"""

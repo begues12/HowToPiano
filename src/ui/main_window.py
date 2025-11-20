@@ -599,12 +599,7 @@ class MainWindow(QMainWindow):
             
             # Start the current training mode
             self.training_manager.start()
-            
-            # Start real-time playback logging
-            if hasattr(self.score_view, 'start_playback_logging'):
-                log_path = "playback_log.txt"
-                self.score_view.start_playback_logging(log_path)
-            
+                        
             # Start the timer for updates
             self.midi_engine.timer.start()
             

@@ -320,7 +320,8 @@ class MidiEngine(QObject):
         
         # Note: In Master mode, training_manager controls timing
         # In Practice/Student modes, this timing is used
-        self.start_time = time.time() - self.paused_at
+        # Start time at -preparation_time so clock reaches 0 when first note plays
+        self.start_time = time.time() - self.paused_at + self.preparation_time
         
         # Start recording for practice mode
         if self.mode == "Practice":
@@ -349,9 +350,9 @@ class MidiEngine(QObject):
         self.is_paused = False
         self.timer.stop()
         self.current_event_index = 0
-        self.paused_at = 0  # Reset to 0, play() will adjust to -preparation_time
+        self.paused_at = -self.preparation_time  # Reset to negative time so play() starts from -preparation_time
         self.waiting_for = set()
-        self.playback_update.emit(0)  # Update to 0 (go_to_start will handle negative time in staff)
+        self.playback_update.emit(-self.preparation_time)  # Emit negative time to show preparation phase
     
     def seek(self, position):
         """Jump to specific position in seconds"""
@@ -377,7 +378,7 @@ class MidiEngine(QObject):
         
         # If playing, adjust start_time to continue from new position
         if self.is_playing:
-            self.start_time = time.time() - position
+            self.start_time = time.time() - position + self.preparation_time
         else:
             # If paused, update paused_at
             self.paused_at = position
