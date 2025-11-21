@@ -428,6 +428,10 @@ class PracticeMode(TrainingMode):
         self.session_start_time = None  # Track session duration
         self.completed = False  # Track if song was completed
         
+        # Error highlight tracking
+        self.error_highlights = set()  # Notes currently highlighted in red
+        self.error_highlight_time = 0  # When error highlighting started
+        
     def start(self):
         """Start practice mode with evaluation"""
         self.is_active = True
@@ -455,6 +459,11 @@ class PracticeMode(TrainingMode):
         """Stop practice mode and clean up"""
         self.is_active = False
         
+        # Clear error highlights
+        for note in list(self.error_highlights):
+            self.note_unhighlight.emit(note)
+        self.error_highlights.clear()
+        
         # Clear all highlighted notes
         for note in list(self.waiting_for):
             self.note_unhighlight.emit(note)
@@ -467,10 +476,11 @@ class PracticeMode(TrainingMode):
         self.active_notes.clear()
         
         # Save statistics and show results if we have played any notes
-        if self.total_notes > 0:
+        # Only show dialog if stopped manually (not if completed naturally)
+        if self.total_notes > 0 and not self.completed:
             self._save_statistics()
             self._show_results_dialog()
-        else:
+        elif self.total_notes == 0:
             # If stopped without playing, just reset to beginning
             self.current_event_index = 0
             self.paused_adjusted_time = 0
@@ -494,6 +504,12 @@ class PracticeMode(TrainingMode):
         adjusted_time -= preparation_time
         
 
+        
+        # Clean up error highlights after 500ms
+        if self.error_highlights and time.time() - self.error_highlight_time > 0.5:
+            for note in list(self.error_highlights):
+                self.note_unhighlight.emit(note)
+            self.error_highlights.clear()
         
         # If waiting for notes, freeze everything - don't update time
         if self.waiting_for:
@@ -578,7 +594,7 @@ class PracticeMode(TrainingMode):
             self.completed = True  # Mark as completed
             self._save_statistics()  # Save stats before finishing
             self.mode_message.emit("✓ Practice finished! Evaluating...")
-            self._show_results_dialog()  # Show results dialog
+            self._show_results_dialog()  # Show results dialog once
             self.finished.emit()  # Notify that song finished
     
     def on_user_note_press(self, note, velocity):
@@ -604,12 +620,22 @@ class PracticeMode(TrainingMode):
             from PyQt6.QtGui import QColor
             red_color = QColor(255, 0, 0)
             
+            # Clear previous error highlights first
+            for old_note in list(self.error_highlights):
+                self.note_unhighlight.emit(old_note)
+            self.error_highlights.clear()
+            
             # Highlight the wrong note played in red
             self.note_highlight.emit(note, red_color)
+            self.error_highlights.add(note)
             
             # Highlight all expected notes (the chord) in red too
             for expected_note in self.waiting_for:
                 self.note_highlight.emit(expected_note, red_color)
+                self.error_highlights.add(expected_note)
+            
+            # Record when error highlighting started
+            self.error_highlight_time = time.time()
             
             print(f"[PRACTICE] ❌ Wrong note {note} (expected chord: {list(self.waiting_for)})")
             
