@@ -831,6 +831,13 @@ class StaffWidget(QWidget):
         for note in self.notes:
             if note['pitch'] == pitch:
                 self.active_note_ids.add(note['id'])
+        
+        # Also mark NoteWidget as played for color change
+        if hasattr(self, 'song_widget') and self.song_widget.notes:
+            for note_widget in self.song_widget.notes:
+                if note_widget.pitch == pitch:
+                    note_widget.is_played = True
+        
         self.update()
     
     def note_off(self, pitch):
@@ -856,6 +863,12 @@ class StaffWidget(QWidget):
                     for cid in chord['note_ids']:
                         self.active_note_ids.discard(cid)
                     self.active_chord_id = None
+        
+        # Also unmark NoteWidget as played to restore original color
+        if hasattr(self, 'song_widget') and self.song_widget.notes:
+            for note_widget in self.song_widget.notes:
+                if note_widget.pitch == pitch:
+                    note_widget.is_played = False
         
         self.update()
     

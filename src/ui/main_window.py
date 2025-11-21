@@ -280,35 +280,6 @@ class MainWindow(QMainWindow):
         """)
         controls_layout.addWidget(self.clef_selector)
         
-        controls_layout.addSpacing(10)
-        
-        # MIDI Input selector
-        self.midi_input_selector = QComboBox()
-        self.midi_input_selector.currentTextChanged.connect(self.change_midi_input)
-        self.midi_input_selector.setStyleSheet("""
-            QComboBox {
-                background-color: #34495e;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 5px 10px;
-                min-width: 140px;
-            }
-            QComboBox:hover {
-                background-color: #4a5f7f;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #2c3e50;
-                color: white;
-                selection-background-color: #3498db;
-            }
-        """)
-        controls_layout.addWidget(self.midi_input_selector)
-        self.refresh_midi_inputs()
-        
         controls_layout.addSpacing(8)
         
         # Sound selector (compact)
@@ -460,6 +431,28 @@ class MainWindow(QMainWindow):
         
         controls_layout.addSpacing(8)
         
+        # MIDI connection indicator
+        self.btn_midi = QPushButton("🎹")
+        self.btn_midi.setStyleSheet("""
+            QPushButton {
+                background-color: #8e44ad;
+                border: 2px solid #9b59b6;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 16px;
+                min-width: 35px;
+                min-height: 27px;
+            }
+            QPushButton:hover {
+                background-color: #9b59b6;
+            }
+        """)
+        self.btn_midi.setToolTip("MIDI: Mock Mode - Click to select device")
+        self.btn_midi.clicked.connect(self.open_midi_selector)
+        controls_layout.addWidget(self.btn_midi)
+        
+        controls_layout.addSpacing(5)
+        
         # Arduino connection indicator
         self.btn_arduino = QPushButton("🔌")
         self.btn_arduino.setStyleSheet("""
@@ -484,6 +477,11 @@ class MainWindow(QMainWindow):
         self.arduino_connected = False
         self.arduino_serial = None
         self.arduino_console_dialog = None
+        
+        # MIDI connection state
+        self.midi_connected = False
+        self.midi_port = None
+        self.midi_device_name = "Mock Mode"
         
         # Add stretch to push controls to the left
         controls_layout.addStretch()
@@ -801,45 +799,165 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"▶ Active - {mode} Mode")
         self.setWindowTitle(f"How To Piano - ▶ {mode} Mode Active")
 
-    def refresh_midi_inputs(self):
-        """Detect and list available MIDI input devices"""
+    def open_midi_selector(self):
+        """Open MIDI device selector dialog"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QListWidget
         import mido
         
-        self.midi_input_selector.clear()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select MIDI Input Device")
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(300)
         
-        # Add mock mode option
-        self.midi_input_selector.addItem("-")
-        self.midi_input_selector.addItem("Mock Mode (Demo)")
+        layout = QVBoxLayout(dialog)
         
-        # Get available MIDI input ports
+        # Title
+        title = QLabel("Select MIDI Input Device")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title)
+        
+        # Device list
+        device_list = QListWidget()
+        device_list.setStyleSheet("""
+            QListWidget {
+                background-color: #2c3e50;
+                color: white;
+                border: 1px solid #34495e;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-radius: 3px;
+            }
+            QListWidget::item:hover {
+                background-color: #34495e;
+            }
+            QListWidget::item:selected {
+                background-color: #3498db;
+            }
+        """)
+        
+        # Add Mock Mode option
+        device_list.addItem("🎭 Mock Mode (Demo)")
+        
+        # Detect MIDI devices
         try:
             input_names = mido.get_input_names()
             if input_names:
                 for port_name in input_names:
-                    self.midi_input_selector.addItem(port_name)
+                    device_list.addItem(f"🎹 {port_name}")
             else:
-                self.midi_input_selector.addItem("No MIDI devices found")
+                info_label = QLabel("No MIDI devices detected")
+                info_label.setStyleSheet("color: #95a5a6; font-style: italic;")
+                layout.addWidget(info_label)
         except Exception as e:
-            print(f"Error detecting MIDI devices: {e}")
-            self.midi_input_selector.addItem("Error detecting devices")
+            error_label = QLabel(f"Error detecting MIDI devices: {e}")
+            error_label.setStyleSheet("color: #e74c3c;")
+            layout.addWidget(error_label)
         
-        # Set mock mode as default
-        self.midi_input_selector.setCurrentIndex(0)
+        layout.addWidget(device_list)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_cancel)
+        
+        btn_select = QPushButton("Select")
+        btn_select.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2ecc71;
+            }
+        """)
+        btn_select.clicked.connect(lambda: self.select_midi_device(device_list.currentItem(), dialog))
+        btn_layout.addWidget(btn_select)
+        
+        layout.addLayout(btn_layout)
+        
+        # Select current device
+        if self.midi_device_name == "Mock Mode":
+            device_list.setCurrentRow(0)
+        
+        dialog.exec()
     
-    def change_midi_input(self, device_name):
-        """Change MIDI input device"""
-        if not device_name or "Mock Mode" in device_name:
-            # Switch to mock mode
-            print("Switching to Mock Mode")
-            # TODO: Restart Arduino worker with mock=True
-            self.setWindowTitle(f"How To Piano - MIDI: Mock Mode")
-        elif "No MIDI" in device_name or "Error" in device_name:
+    def select_midi_device(self, item, dialog):
+        """Select MIDI device from list"""
+        if not item:
             return
+        
+        device_text = item.text()
+        
+        if "Mock Mode" in device_text:
+            # Switch to mock mode
+            self.midi_connected = False
+            self.midi_device_name = "Mock Mode"
+            self.midi_port = None
+            print("✅ Switched to Mock Mode")
+            self.update_midi_indicator()
         else:
-            # Real MIDI device selected
-            print(f"Selected MIDI device: {device_name}")
-            # TODO: Connect to actual MIDI device using mido
-            self.setWindowTitle(f"How To Piano - MIDI: {device_name}")
+            # Extract device name (remove emoji)
+            device_name = device_text.replace("🎹 ", "")
+            
+            try:
+                # TODO: Connect to actual MIDI device using mido
+                # For now, just update the indicator
+                self.midi_connected = True
+                self.midi_device_name = device_name
+                print(f"✅ Selected MIDI device: {device_name}")
+                self.update_midi_indicator()
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(dialog, "Error", f"Failed to connect to MIDI device:\n{e}")
+                return
+        
+        dialog.accept()
+    
+    def update_midi_indicator(self):
+        """Update MIDI connection indicator button"""
+        if self.midi_connected:
+            self.btn_midi.setText("🎹")
+            self.btn_midi.setStyleSheet("""
+                QPushButton {
+                    background-color: #27ae60;
+                    border: 2px solid #2ecc71;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 16px;
+                    min-width: 35px;
+                    min-height: 27px;
+                }
+                QPushButton:hover {
+                    background-color: #2ecc71;
+                }
+            """)
+            self.btn_midi.setToolTip(f"MIDI: {self.midi_device_name} - Click to change")
+        else:
+            self.btn_midi.setText("🎹")
+            self.btn_midi.setStyleSheet("""
+                QPushButton {
+                    background-color: #8e44ad;
+                    border: 2px solid #9b59b6;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 16px;
+                    min-width: 35px;
+                    min-height: 27px;
+                }
+                QPushButton:hover {
+                    background-color: #9b59b6;
+                }
+            """)
+            self.btn_midi.setToolTip(f"MIDI: {self.midi_device_name} - Click to select device")
     
     def change_sound(self, sound_name):
         # Map names to program numbers (General MIDI)
@@ -1189,9 +1307,10 @@ class MainWindow(QMainWindow):
         print(f"MainWindow: Training mode changed to {mode_name}")
     
     def on_song_finished(self):
-        """Called when song finishes playing"""
-        print("MainWindow: Song finished, stopping playback")
-        self.stop_playback()
+        """Called when song finishes playing - wait 3 seconds before stopping to let last note fade"""
+        print("MainWindow: Song finished, waiting 3 seconds for last note to fade...")
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(3000, self.stop_playback)  # Wait 3 seconds before stopping
     
     def _clear_all_active_notes(self):
         """Clear all highlighted keys and stop all sounds"""

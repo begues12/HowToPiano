@@ -100,10 +100,10 @@ class PlayMode(TrainingMode):
         # Update staff position (staff will trigger notes when they cross red line)
         self.playback_update.emit(adjusted_time)
         
-        # Check if song finished
+        # Check if song finished (add 3 seconds delay to allow last note to fade)
         if self.midi_engine.events:
             total_duration = max(evt['time'] for evt in self.midi_engine.events) if self.midi_engine.events else 0
-            if adjusted_time >= total_duration:
+            if adjusted_time >= total_duration + 3.0:  # Add 3 second delay
                 self.is_active = False
                 self.mode_message.emit("✓ Song finished")
                 self.finished.emit()
@@ -176,10 +176,10 @@ class MasterMode(TrainingMode):
         # Update staff position (staff will trigger notes when they cross red line)
         self.playback_update.emit(adjusted_time)
         
-        # Check if song finished - check against total song duration
+        # Check if song finished - check against total song duration (add 3 seconds delay to allow last note to fade)
         if self.midi_engine.events:
             total_duration = max(evt['time'] for evt in self.midi_engine.events) if self.midi_engine.events else 0
-            if adjusted_time >= total_duration:
+            if adjusted_time >= total_duration + 3.0:  # Add 3 second delay
                 self.is_active = False
                 self.mode_message.emit("✓ Song finished")
                 self.finished.emit()  # Notify that song finished
