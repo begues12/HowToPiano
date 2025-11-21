@@ -6,6 +6,9 @@ Each mode controls how the staff, piano, and notes behave during playback
 from abc import ABCMeta, abstractmethod
 from PyQt6.QtCore import QObject, pyqtSignal
 import time
+import json
+import os
+from pathlib import Path
 
 
 # Combined metaclass to resolve ABC + QObject conflict
@@ -76,16 +79,22 @@ class PlayMode(TrainingMode):
     def __init__(self, midi_engine, staff_widget, piano_widget):
         super().__init__(midi_engine, staff_widget, piano_widget)
         self.start_time = 0
+        self.paused_adjusted_time = 0  # Store where we paused
         
     def start(self):
         """Start simple playback"""
         self.is_active = True
-        self.start_time = time.time()
+        # Resume from paused position instead of restarting
+        self.start_time = time.time() - (self.paused_adjusted_time / self.tempo_multiplier)
         self.mode_message.emit("▶ Playing")
         
     def stop(self):
         """Stop playback"""
         self.is_active = False
+        # Save current position for resume
+        if self.start_time > 0:
+            real_elapsed = time.time() - self.start_time
+            self.paused_adjusted_time = real_elapsed * self.tempo_multiplier
         self.mode_message.emit("⏹ Stopped")
         
     def tick(self):
@@ -130,18 +139,16 @@ class MasterMode(TrainingMode):
         super().__init__(midi_engine, staff_widget, piano_widget)
         self.start_time = 0
         self.current_event_index = 0
+        self.paused_adjusted_time = 0  # Store where we paused
         
     def start(self):
         """Start automatic playback"""
         self.is_active = True
-        # CRITICAL FIX: Adjust start_time so that elapsed time begins at -preparation_time
-        # This means: at time.time() = T, we want adjusted_time = -preparation_time
-        # adjusted_time = (time.time() - start_time) * tempo_multiplier - preparation_time
-        # -preparation_time = (T - start_time) * tempo_multiplier - preparation_time
-        # 0 = (T - start_time) * tempo_multiplier
-        # start_time = T (which is correct - we just subtract prep_time in tick())
-        self.start_time = time.time()
-        self.current_event_index = 0
+        # Resume from paused position instead of restarting
+        # start_time adjusted so that elapsed time continues from paused position
+        self.start_time = time.time() - (self.paused_adjusted_time / self.tempo_multiplier)
+        # Don't reset event index - let it continue from where it was
+        # self.current_event_index stays as it was
         
         # Staff widget will handle note triggering via red line crossings
         self.mode_message.emit("▶ Playing - Master Mode")
@@ -149,6 +156,12 @@ class MasterMode(TrainingMode):
     def stop(self):
         """Stop playback"""
         self.is_active = False
+        # Save current position for resume
+        if self.start_time > 0:
+            real_elapsed = time.time() - self.start_time
+            adjusted_time = real_elapsed * self.tempo_multiplier
+            preparation_time = getattr(self.staff_widget, 'preparation_time', 3.0)
+            self.paused_adjusted_time = adjusted_time - preparation_time
         self.mode_message.emit("⏹ Stopped - Master Mode")
         
     def tick(self):
@@ -405,17 +418,37 @@ class PracticeMode(TrainingMode):
         self.current_event_index = 0
         self.start_time = 0
         self.frozen_time = 0
+        self.paused_adjusted_time = 0  # Store where we paused
+        
+        # Statistics tracking
+        self.song_uuid = None  # Set when song is loaded
+        self.mistakes = []  # List of {time, expected, played, timestamp}
+        self.correct_notes = 0
+        self.total_notes = 0
+        self.session_start_time = None  # Track session duration
+        self.completed = False  # Track if song was completed
         
     def start(self):
         """Start practice mode with evaluation"""
         self.is_active = True
         self.waiting_for.clear()
         self.active_notes.clear()
-        self.current_event_index = 0
-        self.start_time = time.time()
+        # Don't reset event index - continue from where we were
+        # self.current_event_index stays as it was
+        # Resume from paused position
+        self.start_time = time.time() - (self.paused_adjusted_time / self.tempo_multiplier)
         # Clear any previous frozen state
         if hasattr(self, 'frozen_adjusted_time'):
             delattr(self, 'frozen_adjusted_time')
+        
+        # Reset statistics only if starting from beginning
+        if self.current_event_index == 0:
+            self.mistakes.clear()
+            self.correct_notes = 0
+            self.total_notes = 0
+            self.session_start_time = time.time()
+            self.completed = False
+        
         self.mode_message.emit("📝 Practice Mode - Play the notes!")
         
     def stop(self):
@@ -433,12 +466,22 @@ class PracticeMode(TrainingMode):
             self.note_unhighlight.emit(note)
         self.active_notes.clear()
         
+        # Save statistics and show results if we have played any notes
+        if self.total_notes > 0:
+            self._save_statistics()
+            self._show_results_dialog()
+        else:
+            # If stopped without playing, just reset to beginning
+            self.current_event_index = 0
+            self.paused_adjusted_time = 0
+            self.playback_update.emit(-3.0)  # Reset to preparation time
+        
         self.mode_message.emit("⏹ Stopped - Practice Mode")
-        # TODO: Emit evaluation signal
         
     def tick(self):
         """Wait for user input before advancing"""
         if not self.is_active:
+            print(f"[PRACTICE TICK] NOT ACTIVE - returning")
             return
         
         # Calculate current time with tempo multiplier
@@ -450,6 +493,8 @@ class PracticeMode(TrainingMode):
         preparation_time = getattr(self.staff_widget, 'preparation_time', 3.0)
         adjusted_time -= preparation_time
         
+
+        
         # If waiting for notes, freeze everything - don't update time
         if self.waiting_for:
             self.mode_message.emit(f"⏸ Waiting for {len(self.waiting_for)} note(s)...")
@@ -457,6 +502,7 @@ class PracticeMode(TrainingMode):
             if not hasattr(self, 'frozen_adjusted_time'):
                 self.frozen_adjusted_time = adjusted_time
                 self.playback_update.emit(adjusted_time)  # Update once at freeze point
+                print(f"[PRACTICE] ⏸ FROZEN at time {adjusted_time:.2f}s, waiting for {len(self.waiting_for)} notes: {list(self.waiting_for)}")
             # Keep resetting start_time to maintain frozen position
             # Add preparation_time back when calculating start_time
             self.start_time = time.time() - ((self.frozen_adjusted_time + preparation_time) / self.tempo_multiplier)
@@ -464,63 +510,75 @@ class PracticeMode(TrainingMode):
         
         # If we just resumed from waiting, clean up
         if hasattr(self, 'frozen_adjusted_time'):
+            print(f"[PRACTICE] ▶ RESUMED from frozen state, continuing from time {adjusted_time:.2f}s")
             delattr(self, 'frozen_adjusted_time')
             self.mode_message.emit("▶ Resuming...")
         
-        # Update staff scroll position
+        # Update staff position first (always update when not frozen)
         self.playback_update.emit(adjusted_time)
         
-        # Process next events
+        # Then process events to check if we need to freeze on next tick
         self._process_events(adjusted_time)
         
     def _process_events(self, current_time):
         """Process MIDI events and light up notes (including chords)"""
         events = self.midi_engine.events
         chord_time_tolerance = 0.05  # 50ms tolerance for chord detection
-        trigger_window = 0.1  # Only trigger notes within 100ms window of current time
+        trigger_tolerance = 0.05  # 50ms window - same as StaffWidget
         
-        # Find the next note(s) to play - only when they're at the red line (time ~= 0)
+        # Don't process new events if we're already waiting for notes
+        if self.waiting_for:
+            return
+        
+        # Find the next note(s) to play - same logic as StaffWidget
         first_note_time = None
+        notes_found = False
         
         while self.current_event_index < len(events):
             evt = events[self.current_event_index]
+            note_time = evt['time']
+            msg = evt['msg']
             
-            # Check if note is at the red line (current_time is close to note time)
-            time_diff = evt['time'] - current_time
+            # Skip notes far in the past (already passed)
+            if note_time < current_time - trigger_tolerance:
+                self.current_event_index += 1
+                continue
             
-            if time_diff <= 0 and abs(time_diff) <= trigger_window:
-                # Note is at or just past the red line
-                msg = evt['msg']
-                
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    # First note found - record its time
-                    if first_note_time is None:
-                        first_note_time = evt['time']
-                    
-                    # Check if this note is part of the same chord (within tolerance)
-                    if abs(evt['time'] - first_note_time) <= chord_time_tolerance:
-                        # Add to waiting set
-                        self.waiting_for.add(msg.note)
-                        self.note_highlight.emit(msg.note, None)
-                        self.staff_note_on.emit(msg.note)
-                        self.current_event_index += 1
-                    else:
-                        # This note is later - don't process it yet
-                        break
-                else:
-                    # Skip non-note events
-                    self.current_event_index += 1
-            elif time_diff > trigger_window:
-                # Future notes - stop processing
+            # Stop if we reach notes far in the future
+            if note_time > current_time + trigger_tolerance:
                 break
+            
+            # === NOTE AT RED LINE ===
+            # At this point, note is within trigger window (passed both checks above)
+            
+            if msg.type == 'note_on' and msg.velocity > 0:
+                # First note found - record its time
+                if first_note_time is None:
+                    first_note_time = note_time
+                
+                # Check if this note is part of the same chord (within tolerance)
+                if abs(note_time - first_note_time) <= chord_time_tolerance:
+                    # Add to waiting set
+                    self.waiting_for.add(msg.note)
+                    self.note_highlight.emit(msg.note, None)
+                    self.staff_note_on.emit(msg.note)
+                    notes_found = True
+                    self.total_notes += 1  # Count expected notes
+                    self.current_event_index += 1
+                else:
+                    # This note is later (different chord) - don't process it yet
+                    break
             else:
-                # Old notes that we missed - skip them
+                # Skip non-note-on events (note_off, etc.)
                 self.current_event_index += 1
         
         # Check if song finished
-        if self.current_event_index >= len(events):
+        if self.current_event_index >= len(events) and not self.waiting_for:
             self.is_active = False
+            self.completed = True  # Mark as completed
+            self._save_statistics()  # Save stats before finishing
             self.mode_message.emit("✓ Practice finished! Evaluating...")
+            self._show_results_dialog()  # Show results dialog
             self.finished.emit()  # Notify that song finished
     
     def on_user_note_press(self, note, velocity):
@@ -528,17 +586,51 @@ class PracticeMode(TrainingMode):
         self.active_notes.add(note)
         self.play_audio.emit(note, velocity)
         
-        # Highlight the key
-        self.note_highlight.emit(note, None)
-        
         # Check if this is a required note
         if note in self.waiting_for:
+            # Correct note - highlight in green (default)
+            self.note_highlight.emit(note, None)
+            self.correct_notes += 1
+            print(f"[PRACTICE] ✓ Correct note {note}! Remaining: {len(self.waiting_for) - 1}")
             self.waiting_for.discard(note)
             
             # If all required notes played, resume playback
             if not self.waiting_for:
+                print(f"[PRACTICE] ✅ All notes played! Resuming...")
                 self.mode_message.emit("✓ Correct! Continue...")
                 # The tick() method will handle resuming from frozen_adjusted_time
+        else:
+            # Wrong note - highlight the wrong note AND all expected notes in red
+            from PyQt6.QtGui import QColor
+            red_color = QColor(255, 0, 0)
+            
+            # Highlight the wrong note played in red
+            self.note_highlight.emit(note, red_color)
+            
+            # Highlight all expected notes (the chord) in red too
+            for expected_note in self.waiting_for:
+                self.note_highlight.emit(expected_note, red_color)
+            
+            print(f"[PRACTICE] ❌ Wrong note {note} (expected chord: {list(self.waiting_for)})")
+            
+            # Record the mistake
+            if self.start_time > 0:
+                real_elapsed = time.time() - self.start_time
+                adjusted_time = real_elapsed * self.tempo_multiplier
+                preparation_time = getattr(self.staff_widget, 'preparation_time', 3.0)
+                current_time = adjusted_time - preparation_time
+                
+                self.mistakes.append({
+                    'time': current_time,
+                    'expected': list(self.waiting_for),
+                    'played': note,
+                    'timestamp': time.time()
+                })
+            
+            # Skip the entire chord (all notes in waiting_for) and continue
+            print(f"[PRACTICE] ⏭ Skipping entire chord: {list(self.waiting_for)}")
+            self.waiting_for.clear()
+            self.mode_message.emit("❌ Wrong! Skipping chord...")
     
     def on_user_note_release(self, note):
         """User releases key"""
@@ -548,6 +640,94 @@ class PracticeMode(TrainingMode):
         # Only unhighlight if not waiting for this note
         if note not in self.waiting_for:
             self.note_unhighlight.emit(note)
+    
+    def _save_statistics(self):
+        """Save practice statistics to JSON file"""
+        if not self.song_uuid or self.total_notes == 0:
+            return
+        
+        # Create stats directory if it doesn't exist
+        stats_dir = Path('library/stats')
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        
+        stats_file = stats_dir / f"{self.song_uuid}.json"
+        
+        # Load existing stats or create new
+        if stats_file.exists():
+            with open(stats_file, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+        else:
+            stats = {
+                'song_uuid': self.song_uuid,
+                'sessions': []
+            }
+        
+        # Calculate accuracy
+        accuracy = (self.correct_notes / self.total_notes * 100) if self.total_notes > 0 else 0
+        
+        # Add new session
+        session = {
+            'timestamp': time.time(),
+            'total_notes': self.total_notes,
+            'correct_notes': self.correct_notes,
+            'mistakes': self.mistakes,
+            'accuracy': round(accuracy, 2)
+        }
+        stats['sessions'].append(session)
+        
+        # Save to file
+        with open(stats_file, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, indent=2, ensure_ascii=False)
+        
+        print(f"[PRACTICE] 💾 Stats saved: {self.correct_notes}/{self.total_notes} correct ({accuracy:.1f}%), {len(self.mistakes)} mistakes")
+    
+    def _show_results_dialog(self):
+        """Show practice results dialog"""
+        from src.ui.practice_results_dialog import PracticeResultsDialog
+        
+        # Calculate duration
+        duration = 0
+        if self.session_start_time:
+            duration = time.time() - self.session_start_time
+        
+        # Calculate accuracy
+        accuracy = (self.correct_notes / self.total_notes * 100) if self.total_notes > 0 else 0
+        
+        # Prepare session stats
+        session_stats = {
+            'total_notes': self.total_notes,
+            'correct_notes': self.correct_notes,
+            'mistakes': self.mistakes,
+            'accuracy': round(accuracy, 2),
+            'duration': round(duration, 1),
+            'completed': self.completed
+        }
+        
+        # Create and show dialog
+        dialog = PracticeResultsDialog(session_stats)
+        dialog.retry_clicked.connect(self._on_retry)
+        dialog.continue_clicked.connect(self._on_continue)
+        dialog.exec()
+    
+    def _on_retry(self):
+        """Restart practice mode from beginning"""
+        print("[PRACTICE] 🔄 Retry requested")
+        # Reset to beginning
+        self.current_event_index = 0
+        self.paused_adjusted_time = 0
+        # Reset staff position to start
+        self.playback_update.emit(-3.0)  # Reset to preparation time
+        # Restart immediately
+        self.start()
+        
+    def _on_continue(self):
+        """Continue to next song or normal mode"""
+        print("[PRACTICE] ➡️ Continue requested")
+        # Reset to beginning
+        self.current_event_index = 0
+        self.paused_adjusted_time = 0
+        # Reset staff position to start
+        self.playback_update.emit(-3.0)  # Reset to preparation time
 
 
 class CorrectorMode(TrainingMode):

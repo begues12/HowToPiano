@@ -1,0 +1,307 @@
+{
+  "36": {
+    "start_led": 0,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "37": {
+    "start_led": 3,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "38": {
+    "start_led": 5,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "39": {
+    "start_led": 8,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "40": {
+    "start_led": 10,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "41": {
+    "start_led": 13,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "42": {
+    "start_led": 16,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "43": {
+    "start_led": 18,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "44": {
+    "start_led": 21,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "45": {
+    "start_led": 23,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "46": {
+    "start_led": 26,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "47": {
+    "start_led": 28,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "48": {
+    "start_led": 31,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "49": {
+    "start_led": 34,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "50": {
+    "start_led": 36,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "51": {
+    "start_led": 39,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "52": {
+    "start_led": 41,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "53": {
+    "start_led": 44,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "54": {
+    "start_led": 47,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "55": {
+    "start_led": 49,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "56": {
+    "start_led": 52,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "57": {
+    "start_led": 54,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "58": {
+    "start_led": 57,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "59": {
+    "start_led": 59,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "60": {
+    "start_led": 62,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "61": {
+    "start_led": 65,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "62": {
+    "start_led": 67,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "63": {
+    "start_led": 70,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "64": {
+    "start_led": 72,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "65": {
+    "start_led": 75,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "66": {
+    "start_led": 78,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "67": {
+    "start_led": 80,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "68": {
+    "start_led": 83,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "69": {
+    "start_led": 85,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "70": {
+    "start_led": 88,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "71": {
+    "start_led": 90,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "72": {
+    "start_led": 93,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "73": {
+    "start_led": 96,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "74": {
+    "start_led": 98,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "75": {
+    "start_led": 101,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "76": {
+    "start_led": 103,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "77": {
+    "start_led": 106,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "78": {
+    "start_led": 109,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "79": {
+    "start_led": 111,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "80": {
+    "start_led": 114,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "81": {
+    "start_led": 116,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "82": {
+    "start_led": 119,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "83": {
+    "start_led": 121,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "84": {
+    "start_led": 124,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "85": {
+    "start_led": 127,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "86": {
+    "start_led": 129,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "87": {
+    "start_led": 132,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "88": {
+    "start_led": 134,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "89": {
+    "start_led": 137,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "90": {
+    "start_led": 140,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "91": {
+    "start_led": 142,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "92": {
+    "start_led": 145,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "93": {
+    "start_led": 147,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "94": {
+    "start_led": 150,
+    "num_leds": 2,
+    "is_black": true
+  },
+  "95": {
+    "start_led": 152,
+    "num_leds": 3,
+    "is_black": false
+  },
+  "96": {
+    "start_led": 155,
+    "num_leds": 3,
+    "is_black": false
+  }
+}

@@ -691,6 +691,11 @@ class MainWindow(QMainWindow):
         # Reset midi_engine to start position (will be adjusted to negative time in play())
         self.midi_engine.paused_at = 0
         
+        # Reset all training modes to start position (t=0)
+        for mode in self.training_manager.modes.values():
+            mode.paused_adjusted_time = 0
+            mode.current_event_index = 0  # Reset event index to beginning
+        
         # Clear all highlighted keys and stop all sounds
         self._clear_all_active_notes()
         
@@ -1089,6 +1094,12 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Loading {song['name']}...")
             if os.path.exists(actual_path):
                 if self.midi_engine.load_midi(actual_path):
+                    # Pass song UUID to Practice Mode for statistics tracking
+                    if hasattr(self.training_manager, 'modes'):
+                        practice_mode = self.training_manager.modes.get('practice')
+                        if practice_mode:
+                            practice_mode.song_uuid = song_id
+                            print(f"MainWindow: Set Practice Mode song_uuid to {song_id}")
                     self.score_view.load_midi_notes(actual_path)
                     
                     # CRITICAL: Apply current zoom settings after loading MIDI

@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
                              QDialogButtonBox, QSpinBox, QTabWidget, QWidget, QSlider,
-                             QCheckBox, QGroupBox, QFormLayout, QPushButton, QColorDialog, QTextEdit)
+                             QCheckBox, QGroupBox, QFormLayout, QPushButton, QColorDialog, 
+                             QTextEdit, QMessageBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
@@ -413,6 +414,42 @@ class SettingsDialog(QDialog):
         
         layout.addRow(QLabel(""))  # Spacer
         
+        # LED Calibration Wizard
+        wizard_group = QGroupBox("🧙 LED Calibration Wizard")
+        wizard_layout = QVBoxLayout()
+        
+        wizard_info = QLabel(
+            "Run the LED calibration wizard to configure LED positions for each piano key.\n"
+            "The wizard will guide you through automatic distribution and manual adjustment."
+        )
+        wizard_info.setWordWrap(True)
+        wizard_info.setStyleSheet("color: #bdc3c7; font-style: italic; padding: 5px;")
+        wizard_layout.addWidget(wizard_info)
+        
+        wizard_btn = QPushButton("🪄 Launch LED Calibration Wizard")
+        wizard_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9b59b6;
+                color: white;
+                padding: 10px;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #8e44ad;
+            }
+            QPushButton:pressed {
+                background-color: #7d3c98;
+            }
+        """)
+        wizard_btn.clicked.connect(self._launch_led_wizard)
+        wizard_layout.addWidget(wizard_btn)
+        
+        wizard_group.setLayout(wizard_layout)
+        layout.addRow(wizard_group)
+        
+        layout.addRow(QLabel(""))  # Spacer
+        
         # Test Connection Group
         test_group = QGroupBox("🧪 Test Connection")
         test_layout = QVBoxLayout()
@@ -618,6 +655,34 @@ class SettingsDialog(QDialog):
         except Exception as e:
             print(f"  ⚠️ Could not detect process: {e}")
             return None
+    def _launch_led_wizard(self):
+        """Launch the LED calibration wizard"""
+        from src.ui.led_teacher_wizard import create_led_teacher_wizard
+        
+        # Get Arduino connection (if any)
+        arduino_conn = None  # TODO: Get from main window if connected
+        
+        # Create and show wizard
+        wizard = create_led_teacher_wizard(arduino_conn, self)
+        
+        # Connect signal to handle completion
+        wizard.calibration_complete.connect(self._on_led_calibration_complete)
+        
+        # Show wizard
+        result = wizard.exec()
+        
+        if result == wizard.DialogCode.Accepted:
+            QMessageBox.information(
+                self,
+                "Calibration Complete",
+                "LED calibration completed successfully!\n"
+                "The configuration has been saved."
+            )
+    
+    def _on_led_calibration_complete(self, led_mapping):
+        """Handle LED calibration completion"""
+        print(f"✅ LED calibration complete: {len(led_mapping)} keys configured")
+        # TODO: Update settings with LED mapping if needed
     
     def _test_arduino_connection(self):
         """Test Arduino connection with LEDs and sound"""
