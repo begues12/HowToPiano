@@ -477,14 +477,19 @@ class PracticeMode(TrainingMode):
         """Process MIDI events and light up notes (including chords)"""
         events = self.midi_engine.events
         chord_time_tolerance = 0.05  # 50ms tolerance for chord detection
+        trigger_window = 0.1  # Only trigger notes within 100ms window of current time
         
-        # Find the next note(s) to play
+        # Find the next note(s) to play - only when they're at the red line (time ~= 0)
         first_note_time = None
         
         while self.current_event_index < len(events):
             evt = events[self.current_event_index]
             
-            if evt['time'] <= current_time:
+            # Check if note is at the red line (current_time is close to note time)
+            time_diff = evt['time'] - current_time
+            
+            if time_diff <= 0 and abs(time_diff) <= trigger_window:
+                # Note is at or just past the red line
                 msg = evt['msg']
                 
                 if msg.type == 'note_on' and msg.velocity > 0:
@@ -505,8 +510,12 @@ class PracticeMode(TrainingMode):
                 else:
                     # Skip non-note events
                     self.current_event_index += 1
-            else:
+            elif time_diff > trigger_window:
+                # Future notes - stop processing
                 break
+            else:
+                # Old notes that we missed - skip them
+                self.current_event_index += 1
         
         # Check if song finished
         if self.current_event_index >= len(events):

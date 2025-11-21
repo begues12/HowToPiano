@@ -644,10 +644,6 @@ class MainWindow(QMainWindow):
         if self.training_manager.current_mode and self.training_manager.current_mode.is_active:
             self.pause_playback()
         else:
-            # If starting from beginning, ensure position is reset
-            if self.midi_engine.paused_at == 0:
-                self.score_view.go_to_start()
-            
             # Check if Practice mode needs countdown
             mode_name = self.training_manager.get_current_mode_name()
             if mode_name == "Practice":
@@ -655,7 +651,7 @@ class MainWindow(QMainWindow):
                 self.score_view.start_countdown(lambda: self.start_practice_after_countdown())
                 return
             
-            # Start the current training mode
+            # Start the current training mode (continues from current position)
             self.training_manager.start()
                         
             # Start the timer for updates
