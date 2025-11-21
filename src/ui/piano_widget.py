@@ -256,7 +256,7 @@ class PianoWidget(QWidget):
                 self.mouse_pressed_notes.add(note)
                 velocity = 100  # Default velocity for mouse clicks
                 self.note_pressed.emit(note, velocity)
-                self.note_on(note, QColor(230, 120, 40))  # Muted orange for user input
+                # Don't call note_on here - MainWindow will handle it via signal
     
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Handle mouse release"""
@@ -265,7 +265,7 @@ class PianoWidget(QWidget):
             for note in list(self.mouse_pressed_notes):
                 self.mouse_pressed_notes.remove(note)
                 self.note_released.emit(note)
-                self.note_off(note)
+                # Don't call note_off here - MainWindow will handle it via signal
     
     def mouseMoveEvent(self, event: QMouseEvent):
         """Handle mouse drag across keys"""
@@ -277,11 +277,11 @@ class PianoWidget(QWidget):
                 self.mouse_pressed_notes.add(note)
                 velocity = 100
                 self.note_pressed.emit(note, velocity)
-                self.note_on(note, QColor(100, 180, 190))  # Muted teal
+                # Don't call note_on here - MainWindow will handle it via signal
             
             # Release notes we're no longer over
             for pressed_note in list(self.mouse_pressed_notes):
                 if pressed_note != note:
                     self.mouse_pressed_notes.remove(pressed_note)
                     self.note_released.emit(pressed_note)
-                    self.note_off(pressed_note)
+                    # Don't call note_off here - MainWindow will handle it via signal

@@ -142,12 +142,16 @@ class MainWindow(QMainWindow):
         self.arduino.note_off.connect(self.midi_engine.on_user_note_off)
         
         # Connect Arduino -> PianoWidget (Visual Feedback with bright orange for user input)
-        self.arduino.note_on.connect(lambda n, v: self.piano_widget.note_on(n, QColor(255, 140, 0)))
-        self.arduino.note_off.connect(lambda n: self.piano_widget.note_off(n))
+        self.arduino.note_on.connect(self.on_arduino_note_on)
+        self.arduino.note_off.connect(self.on_arduino_note_off)
         
         # Connect PianoWidget Mouse -> MidiEngine (Interactive Piano)
         self.piano_widget.note_pressed.connect(self.midi_engine.on_user_note_on)
         self.piano_widget.note_released.connect(self.midi_engine.on_user_note_off)
+        
+        # Connect PianoWidget Mouse -> Visual feedback (registered)
+        self.piano_widget.note_pressed.connect(self.on_user_note_pressed)
+        self.piano_widget.note_released.connect(self.on_user_note_released)
         
         # Connect PianoWidget -> Arduino LED control
         self.piano_widget.note_pressed.connect(self.send_arduino_led_on)
@@ -523,6 +527,14 @@ class MainWindow(QMainWindow):
         self.arduino.note_off.connect(self.training_manager.on_user_note_release)
         self.piano_widget.note_pressed.connect(self.training_manager.on_user_note_press)
         self.piano_widget.note_released.connect(self.training_manager.on_user_note_release)
+        
+        # Track which notes should be active (pressed by user or playing)
+        self.expected_active_notes = set()  # Set of MIDI note numbers that should be lit
+        
+        # Keyboard cleanup timer - removes stuck keys every 100ms
+        self.cleanup_timer = QTimer()
+        self.cleanup_timer.timeout.connect(self._cleanup_orphaned_keys)
+        self.cleanup_timer.start(100)  # Run every 100ms
 
     def open_midi(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open MIDI File", "", "MIDI Files (*.mid *.midi)")
@@ -1031,56 +1043,73 @@ class MainWindow(QMainWindow):
             if was_playing:
                 self.midi_engine.play()
 
+    def _activate_piano_key(self, pitch, velocity, color=None, play_audio=True):
+        """Centralized method to activate a piano key with visual and audio"""
+        # Register as expected active note
+        self.expected_active_notes.add(pitch)
+        
+        # Play audio if requested
+        if play_audio:
+            def play_note_async():
+                self.midi_engine.synth.note_on(pitch, velocity)
+                if self.midi_engine.audio_type in ['maestro', 'pygame']:
+                    self.midi_engine._play_note_pygame(pitch, velocity)
+            threading.Thread(target=play_note_async, daemon=True).start()
+        
+        # Visual feedback
+        if color is None:
+            color = self.get_played_note_color()
+        self.piano_widget.note_on(pitch, color)
+        self.score_view.note_on(pitch)
+    
+    def _deactivate_piano_key(self, pitch, stop_audio=True):
+        """Centralized method to deactivate a piano key with visual and audio"""
+        # Unregister from expected active notes
+        self.expected_active_notes.discard(pitch)
+        
+        # Stop audio if requested
+        if stop_audio:
+            def stop_note_async():
+                self.midi_engine.synth.note_off(pitch)
+                if self.midi_engine.audio_type in ['maestro', 'pygame']:
+                    self.midi_engine._stop_note_pygame(pitch)
+            threading.Thread(target=stop_note_async, daemon=True).start()
+        
+        # Visual feedback
+        self.piano_widget.note_off(pitch)
+        self.score_view.note_off(pitch)
+    
     def on_staff_note_triggered(self, pitch, velocity):
         """Called when a note crosses the red line on the staff"""
-        # Play audio in separate thread to avoid blocking
-        def play_note_async():
-            # Play the sound
-            self.midi_engine.synth.note_on(pitch, velocity)
-            
-            # Play audio (Maestro sampler or pygame synthesis)
-            if self.midi_engine.audio_type in ['maestro', 'pygame']:
-                self.midi_engine._play_note_pygame(pitch, velocity)
-        
-        # Start thread for audio playback
-        note_thread = threading.Thread(target=play_note_async, daemon=True)
-        note_thread.start()
-        
-        # Illuminate the piano key with configured color
-        self.piano_widget.note_on(pitch, self.get_played_note_color())
-        
-        # Highlight on staff
-        self.score_view.note_on(pitch)
+        self._activate_piano_key(pitch, velocity, play_audio=True)
     
     def on_staff_note_ended(self, pitch):
         """Called when a note ends (crosses red line + duration)"""
-        # Stop audio in separate thread to avoid blocking
-        def stop_note_async():
-            # Stop the sound
-            self.midi_engine.synth.note_off(pitch)
-            
-            # Stop audio (Maestro sampler or pygame synthesis)
-            if self.midi_engine.audio_type in ['maestro', 'pygame']:
-                self.midi_engine._stop_note_pygame(pitch)
-        
-        # Start thread for stopping audio
-        stop_thread = threading.Thread(target=stop_note_async, daemon=True)
-        stop_thread.start()
-        
-        # Turn off piano key
-        self.piano_widget.note_off(pitch)
-        
-        # Remove highlight from staff
-        self.score_view.note_off(pitch)
+        self._deactivate_piano_key(pitch, stop_audio=True)
     
     def on_playback_note_on(self, note, velocity):
-        # Called when the MIDI file plays a note - use configured color
-        self.piano_widget.note_on(note, self.get_played_note_color())
-        self.score_view.note_on(note)
+        """Called when the MIDI file plays a note"""
+        self._activate_piano_key(note, velocity, play_audio=False)
         
     def on_playback_note_off(self, note):
-        self.piano_widget.note_off(note)
-        self.score_view.note_off(note)
+        """Called when the MIDI file stops a note"""
+        self._deactivate_piano_key(note, stop_audio=False)
+    
+    def on_arduino_note_on(self, note, velocity):
+        """Called when Arduino detects a note press"""
+        self._activate_piano_key(note, velocity, QColor(255, 140, 0), play_audio=False)
+    
+    def on_arduino_note_off(self, note):
+        """Called when Arduino detects a note release"""
+        self._deactivate_piano_key(note, stop_audio=False)
+    
+    def on_user_note_pressed(self, note, velocity):
+        """Called when user clicks piano key"""
+        self._activate_piano_key(note, velocity, QColor(255, 140, 0), play_audio=False)
+    
+    def on_user_note_released(self, note):
+        """Called when user releases piano key"""
+        self._deactivate_piano_key(note, stop_audio=False)
 
     def adapt_song_to_piano(self):
         """Keep piano size fixed according to settings (no adaptation)"""
@@ -1127,15 +1156,11 @@ class MainWindow(QMainWindow):
     
     def on_mode_note_highlight(self, pitch, color):
         """Training mode wants to highlight a piano key"""
-        if color is None:
-            color = self.get_played_note_color()
-        self.piano_widget.note_on(pitch, color)
-        self.score_view.note_on(pitch)
+        self._activate_piano_key(pitch, 80, color, play_audio=False)
     
     def on_mode_note_unhighlight(self, pitch):
         """Training mode wants to unhighlight a piano key"""
-        self.piano_widget.note_off(pitch)
-        self.score_view.note_off(pitch)
+        self._deactivate_piano_key(pitch, stop_audio=False)
     
     def on_mode_play_audio(self, pitch, velocity):
         """Training mode wants to play audio"""
@@ -1170,6 +1195,18 @@ class MainWindow(QMainWindow):
     
     def _clear_all_active_notes(self):
         """Clear all highlighted keys and stop all sounds"""
+        
+        # Clear staff widget active notes first
+        if hasattr(self.score_view, 'active_note_ids'):
+            self.score_view.active_note_ids.clear()
+        
+        # Clear piano widget active notes
+        if hasattr(self.piano_widget, 'active_notes'):
+            self.piano_widget.active_notes.clear()
+        
+        # Clear expected active notes
+        self.expected_active_notes.clear()
+        
         # Turn off all piano keys (88 keys from MIDI 21 to 108)
         for note in range(21, 109):
             self.piano_widget.note_off(note)
@@ -1192,6 +1229,38 @@ class MainWindow(QMainWindow):
                 self.midi_engine.maestro_sampler.stop_all()
             except Exception as e:
                 print(f"Error stopping maestro sampler: {e}")
+        
+        # Force UI update
+        self.piano_widget.update()
+        self.score_view.update()
+    
+    def _cleanup_orphaned_keys(self):
+        """Remove stuck keys that shouldn't be active (runs every 100ms)"""
+        # Get currently active notes from piano widget
+        if not hasattr(self.piano_widget, 'active_notes'):
+            return
+        
+        current_active = set(self.piano_widget.active_notes.keys())
+        
+        # Find notes that are active but shouldn't be
+        orphaned_notes = current_active - self.expected_active_notes
+        
+        if orphaned_notes:
+            # Clean up orphaned keys
+            for note in orphaned_notes:
+                self.piano_widget.note_off(note)
+                self.score_view.note_off(note)
+                
+                # Stop audio
+                try:
+                    self.midi_engine.synth.note_off(note)
+                    if self.midi_engine.audio_type in ['maestro', 'pygame']:
+                        self.midi_engine._stop_note_pygame(note)
+                except Exception as e:
+                    pass
+            
+            # Update display
+            self.piano_widget.update()
     
     def get_played_note_color(self):
         """Get played note color from settings as QColor"""

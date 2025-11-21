@@ -698,14 +698,13 @@ class StaffWidget(QWidget):
             note_duration = note['duration']
             note_end_time = note_time + note_duration
             
-            # Skip notes far in the past (optimization)
+            # Skip notes far in the past (beyond their end time + 1 second buffer)
             if note_end_time < current_time - 1.0:
                 continue
             
-            # Skip notes far in the future (optimization)
-            # Changed from 'break' to 'continue' to avoid skipping notes
-            # at the same time or within tolerance window
-            if note_time > current_time + trigger_tolerance:
+            # Skip notes far in the future that haven't started yet
+            # BUT: Don't skip if note is already triggered (needs to check for end)
+            if note_time > current_time + trigger_tolerance and note_id not in self.triggered_notes:
                 continue
             
             # === NOTE ON LOGIC ===
@@ -731,8 +730,9 @@ class StaffWidget(QWidget):
             
             # === NOTE OFF LOGIC ===
             # End note when duration expires (also pre-trigger by latency)
-            elif (trigger_time >= note_end_time and
-                  note_id in self.triggered_notes):
+            # Changed from elif to if to allow both ON and OFF in same iteration
+            if (trigger_time >= note_end_time and
+                note_id in self.triggered_notes):
                 
                 # Stop sound
                 self.triggered_notes.discard(note_id)
@@ -819,7 +819,7 @@ class StaffWidget(QWidget):
         # Trigger notes that should play now
         # Use slightly ahead time for audio compensation
         trigger_time = time_sec + self.audio_latency_sec
-        self.song_widget.check_and_trigger_notes(trigger_time)
+        self._check_and_trigger_notes(time_sec)
         
         # Update display if time changed significantly
         if abs(time_sec - old_time) > 0.01:
