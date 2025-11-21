@@ -2,8 +2,13 @@ import sys
 import os
 import json
 import threading
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QFileDialog, QMessageBox, QSpinBox
-from PyQt6.QtCore import Qt, QThread, QSize
+import time
+import serial
+import serial.tools.list_ports
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QPushButton, QLabel, QComboBox, QFileDialog, QMessageBox, 
+                             QSpinBox, QDialog, QTextEdit)
+from PyQt6.QtCore import Qt, QThread, QSize, pyqtSignal, QObject, QTimer
 
 from src.core.arduino_conn import ArduinoWorker
 from src.core.synth import PianoSynth
@@ -143,6 +148,10 @@ class MainWindow(QMainWindow):
         # Connect PianoWidget Mouse -> MidiEngine (Interactive Piano)
         self.piano_widget.note_pressed.connect(self.midi_engine.on_user_note_on)
         self.piano_widget.note_released.connect(self.midi_engine.on_user_note_off)
+        
+        # Connect PianoWidget -> Arduino LED control
+        self.piano_widget.note_pressed.connect(self.send_arduino_led_on)
+        self.piano_widget.note_released.connect(self.send_arduino_led_off)
         
         self.arduino_thread.start()
 
@@ -445,12 +454,42 @@ class MainWindow(QMainWindow):
         self.btn_settings.setToolTip("Settings")
         controls_layout.addWidget(self.btn_settings)
         
+        controls_layout.addSpacing(8)
+        
+        # Arduino connection indicator
+        self.btn_arduino = QPushButton("🔌")
+        self.btn_arduino.setStyleSheet("""
+            QPushButton {
+                background-color: #c0392b;
+                border: 2px solid #e74c3c;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 16px;
+                min-width: 35px;
+                min-height: 27px;
+            }
+            QPushButton:hover {
+                background-color: #e74c3c;
+            }
+        """)
+        self.btn_arduino.setToolTip("Arduino: Disconnected")
+        self.btn_arduino.clicked.connect(self.open_arduino_console)
+        controls_layout.addWidget(self.btn_arduino)
+        
+        # Arduino connection state
+        self.arduino_connected = False
+        self.arduino_serial = None
+        self.arduino_console_dialog = None
+        
         # Add stretch to push controls to the left
         controls_layout.addStretch()
         
         # Status Bar
         self.status_label = QLabel("Ready")
         self.statusBar().addWidget(self.status_label)
+        
+        # Start Arduino detection
+        QTimer.singleShot(1000, self.detect_arduino_connection)
         
         # Connect Engine Signals
         self.midi_engine.playback_update.connect(self.update_playback_time)
@@ -1203,9 +1242,174 @@ class MainWindow(QMainWindow):
         try:
             with open(self.settings_file, 'w') as f:
                 json.dump(self.settings, f, indent=2)
-            print(f"Settings saved to {self.settings_file}")
+    
+    def detect_arduino_connection(self):
+        """Detect Arduino connection automatically"""
+        print("\n🔍 Detecting Arduino connection...")
+        
+        # Try to get saved port from settings first
+        saved_port = self.settings.get("ledteacher_port", None)
+        
+        if saved_port and saved_port != "None":
+            print(f"  Trying saved port: {saved_port}")
+            if self.try_connect_arduino(saved_port):
+                return
+        
+        # Auto-detect Arduino ports
+        ports = serial.tools.list_ports.comports()
+        arduino_keywords = ['arduino', 'ch340', 'ch341', 'cp210', 'ftdi', 'usb-serial']
+        
+        for port in ports:
+            port_desc = port.description.lower()
+            if any(keyword in port_desc for keyword in arduino_keywords):
+                print(f"  Found potential Arduino: {port.device} - {port.description}")
+                if self.try_connect_arduino(port.device):
+                    return
+        
+        print("  ❌ No Arduino detected")
+    
+    def try_connect_arduino(self, port):
+        """Try to connect to Arduino on specified port"""
+        try:
+            print(f"    Opening {port}...")
+            ser = serial.Serial(port, 115200, timeout=0.1)
+            time.sleep(2)  # Wait for Arduino reset
+            
+            # Check if Arduino responds
+            if ser.in_waiting > 0:
+                response = ser.readline().decode('utf-8', errors='ignore').strip()
+                print(f"    Response: {response}")
+                
+                if response == "READY":
+                    print(f"    ✅ Arduino connected on {port}!")
+                    self.arduino_serial = ser
+                    self.arduino_connected = True
+                    self.update_arduino_indicator()
+                    return True
+            
+            # Send PING to check connection
+            ser.write(b"PING\\n")
+            time.sleep(0.1)
+            
+            if ser.in_waiting > 0:
+                response = ser.readline().decode('utf-8', errors='ignore').strip()
+                print(f"    Response: {response}")
+                
+                if "PONG" in response or "READY" in response:
+                    print(f"    ✅ Arduino connected on {port}!")
+                    self.arduino_serial = ser
+                    self.arduino_connected = True
+                    self.update_arduino_indicator()
+                    return True
+            
+            ser.close()
+            print(f"    ❌ No valid response from {port}")
+            
         except Exception as e:
-            print(f"Error saving settings: {e}")
+            print(f"    ❌ Error connecting to {port}: {e}")
+        
+        return False
+    
+    def update_arduino_indicator(self):
+        """Update Arduino connection indicator button"""
+        if self.arduino_connected:
+            self.btn_arduino.setText("\ud83d\udd0c")
+            self.btn_arduino.setStyleSheet(\"\"\"
+                QPushButton {
+                    background-color: #27ae60;
+                    border: 2px solid #2ecc71;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 16px;
+                    min-width: 35px;
+                    min-height: 27px;
+                }
+                QPushButton:hover {
+                    background-color: #2ecc71;
+                }
+            \"\"\")
+            self.btn_arduino.setToolTip("Arduino: Connected - Click to open console")
+        else:
+            self.btn_arduino.setText("\ud83d\udd0c")
+            self.btn_arduino.setStyleSheet(\"\"\"
+                QPushButton {
+                    background-color: #c0392b;
+                    border: 2px solid #e74c3c;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 16px;
+                    min-width: 35px;
+                    min-height: 27px;
+                }
+                QPushButton:hover {
+                    background-color: #e74c3c;
+                }
+            \"\"\")
+            self.btn_arduino.setToolTip("Arduino: Disconnected")
+    
+    def send_arduino_led_on(self, midi_note, velocity=100):
+        """Send LED ON command to Arduino when piano key is pressed"""
+        if not self.arduino_connected or not self.arduino_serial:
+            return
+        
+        try:
+            command = f"ON:{midi_note}:{velocity}\\n"
+            self.arduino_serial.write(command.encode())
+            
+            # Log to console if open
+            if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
+                self.arduino_console_dialog.log_sent(command.strip())
+                
+                # Read response
+                time.sleep(0.01)
+                if self.arduino_serial.in_waiting > 0:
+                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
+                    if response:
+                        self.arduino_console_dialog.log_received(response)
+        
+        except Exception as e:
+            print(f"Error sending LED ON: {e}")
+            self.arduino_connected = False
+            self.update_arduino_indicator()
+    
+    def send_arduino_led_off(self, midi_note):
+        """Send LED OFF command to Arduino when piano key is released"""
+        if not self.arduino_connected or not self.arduino_serial:
+            return
+        
+        try:
+            command = f"OFF:{midi_note}\\n"
+            self.arduino_serial.write(command.encode())
+            
+            # Log to console if open
+            if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
+                self.arduino_console_dialog.log_sent(command.strip())
+                
+                # Read response
+                time.sleep(0.01)
+                if self.arduino_serial.in_waiting > 0:
+                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
+                    if response:
+                        self.arduino_console_dialog.log_received(response)
+        
+        except Exception as e:
+            print(f"Error sending LED OFF: {e}")
+            self.arduino_connected = False
+            self.update_arduino_indicator()
+    
+    def open_arduino_console(self):
+        """Open Arduino console dialog"""
+        if not self.arduino_connected:
+            QMessageBox.warning(self, "Arduino Not Connected", 
+                              "Arduino is not connected. Please check connection in Settings.")
+            return
+        
+        if self.arduino_console_dialog is None:
+            self.arduino_console_dialog = ArduinoConsoleDialog(self.arduino_serial, self)
+        
+        self.arduino_console_dialog.show()
+        self.arduino_console_dialog.raise_()
+        self.arduino_console_dialog.activateWindow()
     
     def closeEvent(self, event):
         """Clean shutdown of all components"""
@@ -1233,7 +1437,15 @@ class MainWindow(QMainWindow):
                 self.arduino_thread.quit()
                 self.arduino_thread.wait(1000)  # Wait max 1 second
             
-            # 4. Save settings
+            # 4. Close Arduino connection
+            if hasattr(self, 'arduino_serial') and self.arduino_serial:
+                print("  - Cerrando conexión Arduino...")
+                try:
+                    self.arduino_serial.close()
+                except:
+                    pass
+            
+            # 5. Save settings
             self.save_settings()
             print("✅ Aplicación cerrada correctamente")
             
@@ -1241,3 +1453,186 @@ class MainWindow(QMainWindow):
             print(f"⚠️ Error al cerrar: {e}")
         finally:
             event.accept()
+
+
+class ArduinoConsoleDialog(QDialog):
+    """Console dialog for monitoring Arduino LED commands"""
+    
+    def __init__(self, serial_port, parent=None):
+        super().__init__(parent)
+        self.serial_port = serial_port
+        self.setWindowTitle("Arduino LED Console")
+        self.resize(700, 500)
+        
+        layout = QVBoxLayout(self)
+        
+        # Title
+        title = QLabel("🔌 Arduino LED Console - Real-time Monitoring")
+        title.setStyleSheet("""
+            color: #2ecc71;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 10px;
+            background-color: #1e1e1e;
+            border-bottom: 2px solid #27ae60;
+        """)
+        layout.addWidget(title)
+        
+        # Console output
+        self.console = QTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setStyleSheet("""
+            QTextEdit {
+                background-color: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 3px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 11px;
+                padding: 8px;
+            }
+        """)
+        layout.addWidget(self.console)
+        
+        # Info label
+        info = QLabel("💡 Press piano keys to see LED commands in real-time")
+        info.setStyleSheet("""
+            color: #8b949e;
+            font-size: 10px;
+            padding: 5px;
+            background-color: #161b22;
+        """)
+        layout.addWidget(info)
+        
+        # Button row
+        btn_layout = QHBoxLayout()
+        
+        clear_btn = QPushButton("🗑️ Clear Console")
+        clear_btn.clicked.connect(self.console.clear)
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #21262d;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 3px;
+                padding: 8px 16px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #30363d;
+            }
+        """)
+        btn_layout.addWidget(clear_btn)
+        
+        test_btn = QPushButton("🎵 Test C Major Scale")
+        test_btn.clicked.connect(self.test_scale)
+        test_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1f6feb;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 8px 16px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #388bfd;
+            }
+        """)
+        btn_layout.addWidget(test_btn)
+        
+        btn_layout.addStretch()
+        
+        close_btn = QPushButton("✖ Close")
+        close_btn.clicked.connect(self.close)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #21262d;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 3px;
+                padding: 8px 16px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #da3633;
+                color: white;
+            }
+        """)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Initial message
+        self.console.append("<span style='color: #58a6ff;'>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>")
+        self.console.append("<span style='color: #2ecc71; font-weight: bold;'>✓ Arduino Connected</span>")
+        self.console.append("<span style='color: #8b949e;'>Monitoring LED commands...</span>")
+        self.console.append("<span style='color: #58a6ff;'>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>")
+        self.console.append("")
+    
+    def log_sent(self, command):
+        """Log sent command"""
+        timestamp = time.strftime("%H:%M:%S")
+        self.console.append(f"<span style='color: #8b949e;'>[{timestamp}]</span> "
+                          f"<span style='color: #79c0ff; font-weight: bold;'>➤</span> "
+                          f"<span style='color: #79c0ff;'>{command}</span>")
+        self.console.verticalScrollBar().setValue(
+            self.console.verticalScrollBar().maximum()
+        )
+    
+    def log_received(self, response):
+        """Log received response"""
+        timestamp = time.strftime("%H:%M:%S")
+        self.console.append(f"<span style='color: #8b949e;'>[{timestamp}]</span> "
+                          f"<span style='color: #2ecc71; font-weight: bold;'>◄</span> "
+                          f"<span style='color: #2ecc71;'>{response}</span>")
+        self.console.verticalScrollBar().setValue(
+            self.console.verticalScrollBar().maximum()
+        )
+    
+    def test_scale(self):
+        """Test C major scale"""
+        if not self.serial_port:
+            return
+        
+        self.console.append("")
+        self.console.append("<span style='color: #f0883e; font-weight: bold;'>🎵 Testing C Major Scale...</span>")
+        
+        # C major scale: C4-C5 (60-72)
+        notes = [60, 62, 64, 65, 67, 69, 71, 72]
+        note_names = ["C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5"]
+        
+        try:
+            for note, name in zip(notes, note_names):
+                # ON
+                command = f"ON:{note}:100"
+                self.serial_port.write((command + "\n").encode())
+                self.log_sent(command)
+                
+                time.sleep(0.05)
+                if self.serial_port.in_waiting > 0:
+                    response = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
+                    if response:
+                        self.log_received(response)
+                
+                time.sleep(0.3)
+                
+                # OFF
+                command = f"OFF:{note}"
+                self.serial_port.write((command + "\n").encode())
+                self.log_sent(command)
+                
+                time.sleep(0.05)
+                if self.serial_port.in_waiting > 0:
+                    response = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
+                    if response:
+                        self.log_received(response)
+                
+                time.sleep(0.1)
+            
+            self.console.append("<span style='color: #2ecc71; font-weight: bold;'>✓ Test completed</span>")
+            self.console.append("")
+            
+        except Exception as e:
+            self.console.append(f"<span style='color: #f85149;'>❌ Error: {e}</span>")
+            self.console.append("")
