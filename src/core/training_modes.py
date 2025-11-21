@@ -413,6 +413,9 @@ class PracticeMode(TrainingMode):
         self.active_notes.clear()
         self.current_event_index = 0
         self.start_time = time.time()
+        # Clear any previous frozen state
+        if hasattr(self, 'frozen_adjusted_time'):
+            delattr(self, 'frozen_adjusted_time')
         self.mode_message.emit("📝 Practice Mode - Play the notes!")
         
     def stop(self):
@@ -437,25 +440,46 @@ class PracticeMode(TrainingMode):
         """Wait for user input before advancing"""
         if not self.is_active:
             return
-            
-        # If waiting for notes, freeze time
-        if self.waiting_for:
-            self.frozen_time = time.time()
-            self.mode_message.emit(f"⏸ Waiting for {len(self.waiting_for)} note(s)...")
-            return
-            
-        # Process next events with tempo adjustment
+        
+        # Calculate current time with tempo multiplier
         real_elapsed = time.time() - self.start_time
         adjusted_time = real_elapsed * self.tempo_multiplier
+        
+        # CRITICAL: Subtract preparation time (same as Master Mode)
+        # This ensures notes start off-screen and scroll to the red line
+        preparation_time = getattr(self.staff_widget, 'preparation_time', 3.0)
+        adjusted_time -= preparation_time
+        
+        # If waiting for notes, freeze everything - don't update time
+        if self.waiting_for:
+            self.mode_message.emit(f"⏸ Waiting for {len(self.waiting_for)} note(s)...")
+            # Store the frozen time to resume later (only once)
+            if not hasattr(self, 'frozen_adjusted_time'):
+                self.frozen_adjusted_time = adjusted_time
+                self.playback_update.emit(adjusted_time)  # Update once at freeze point
+            # Keep resetting start_time to maintain frozen position
+            # Add preparation_time back when calculating start_time
+            self.start_time = time.time() - ((self.frozen_adjusted_time + preparation_time) / self.tempo_multiplier)
+            return
+        
+        # If we just resumed from waiting, clean up
+        if hasattr(self, 'frozen_adjusted_time'):
+            delattr(self, 'frozen_adjusted_time')
+            self.mode_message.emit("▶ Resuming...")
         
         # Update staff scroll position
         self.playback_update.emit(adjusted_time)
         
+        # Process next events
         self._process_events(adjusted_time)
         
     def _process_events(self, current_time):
-        """Process MIDI events and light up notes"""
+        """Process MIDI events and light up notes (including chords)"""
         events = self.midi_engine.events
+        chord_time_tolerance = 0.05  # 50ms tolerance for chord detection
+        
+        # Find the next note(s) to play
+        first_note_time = None
         
         while self.current_event_index < len(events):
             evt = events[self.current_event_index]
@@ -464,16 +488,26 @@ class PracticeMode(TrainingMode):
                 msg = evt['msg']
                 
                 if msg.type == 'note_on' and msg.velocity > 0:
-                    # Light up the key and wait for user
-                    self.waiting_for.add(msg.note)
-                    self.note_highlight.emit(msg.note, None)
-                    self.staff_note_on.emit(msg.note)
-                    break  # Pause until user plays
+                    # First note found - record its time
+                    if first_note_time is None:
+                        first_note_time = evt['time']
                     
-                self.current_event_index += 1
+                    # Check if this note is part of the same chord (within tolerance)
+                    if abs(evt['time'] - first_note_time) <= chord_time_tolerance:
+                        # Add to waiting set
+                        self.waiting_for.add(msg.note)
+                        self.note_highlight.emit(msg.note, None)
+                        self.staff_note_on.emit(msg.note)
+                        self.current_event_index += 1
+                    else:
+                        # This note is later - don't process it yet
+                        break
+                else:
+                    # Skip non-note events
+                    self.current_event_index += 1
             else:
                 break
-                
+        
         # Check if song finished
         if self.current_event_index >= len(events):
             self.is_active = False
@@ -492,14 +526,10 @@ class PracticeMode(TrainingMode):
         if note in self.waiting_for:
             self.waiting_for.discard(note)
             
-            # If all required notes played, continue
+            # If all required notes played, resume playback
             if not self.waiting_for:
                 self.mode_message.emit("✓ Correct! Continue...")
-                # Resume playback - adjust start_time to continue from current position
-                if self.current_event_index < len(self.midi_engine.events):
-                    current_event_time = self.midi_engine.events[self.current_event_index]['time']
-                    # Adjust for tempo: divide by tempo_multiplier since adjusted_time = real_time * tempo
-                    self.start_time = time.time() - (current_event_time / self.tempo_multiplier)
+                # The tick() method will handle resuming from frozen_adjusted_time
     
     def on_user_note_release(self, note):
         """User releases key"""

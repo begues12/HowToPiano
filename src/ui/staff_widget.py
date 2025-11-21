@@ -96,7 +96,7 @@ class StaffWidget(QWidget):
         self.show_note_colors = True  # Toggle for colored notes
         
         # Clef type
-        self.clef_type = "grand"  # Options: "treble", "bass", "alto", "grand" (both staves)
+        self.clef_type = "grand"  # Options: "treble", "bass", "alto", "tenor", "soprano", "mezzosoprano", "baritone", "grand" (both staves)
         
         # Note name to MIDI number mapping
         self.note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -421,11 +421,19 @@ class StaffWidget(QWidget):
             
             # Different clefs have different reference notes on the middle line
             if self.clef_type == "treble":
-                reference_note = 71  # B4
+                reference_note = 71  # B4 (middle line)
             elif self.clef_type == "bass":
-                reference_note = 50  # D3
+                reference_note = 50  # D3 (middle line)
             elif self.clef_type == "alto":
-                reference_note = 60  # C4
+                reference_note = 60  # C4 (middle line) - Alto/Viola clef
+            elif self.clef_type == "tenor":
+                reference_note = 57  # A3 (middle line) - Tenor clef
+            elif self.clef_type == "soprano":
+                reference_note = 60  # C4 (1st line) - Soprano clef
+            elif self.clef_type == "mezzosoprano":
+                reference_note = 57  # A3 (2nd line) - Mezzosoprano clef
+            elif self.clef_type == "baritone":
+                reference_note = 53  # F3 (middle line) - Baritone clef
             else:
                 reference_note = 71  # Default to treble
             
@@ -826,17 +834,20 @@ class StaffWidget(QWidget):
             self.update()
     
     def note_on(self, pitch):
-        """Highlight specific note(s) with this pitch"""
-        # Find and activate notes with this pitch
+        """Highlight specific note(s) with this pitch that are currently triggered"""
+        # Find and activate notes with this pitch that are in triggered_notes
         for note in self.notes:
-            if note['pitch'] == pitch:
+            if note['pitch'] == pitch and note['id'] in self.triggered_notes:
                 self.active_note_ids.add(note['id'])
-        
-        # Also mark NoteWidget as played for color change
-        if hasattr(self, 'song_widget') and self.song_widget.notes:
-            for note_widget in self.song_widget.notes:
-                if note_widget.pitch == pitch:
-                    note_widget.is_played = True
+                
+                # Also mark corresponding NoteWidget as played for color change
+                if hasattr(self, 'song_widget') and self.song_widget.notes:
+                    # Find the matching NoteWidget by time and pitch
+                    for note_widget in self.song_widget.notes:
+                        if (note_widget.pitch == pitch and 
+                            abs(note_widget.start_time - note['time']) < 0.001):
+                            note_widget.is_played = True
+                            break
         
         self.update()
     
@@ -856,6 +867,15 @@ class StaffWidget(QWidget):
             # Deactivate this note
             self.active_note_ids.discard(note_id)
             
+            # Also unmark corresponding NoteWidget as played to restore original color
+            if hasattr(self, 'song_widget') and self.song_widget.notes:
+                # Find the matching NoteWidget by time and pitch
+                for note_widget in self.song_widget.notes:
+                    if (note_widget.pitch == pitch and 
+                        abs(note_widget.start_time - note['time']) < 0.001):
+                        note_widget.is_played = False
+                        break
+            
             # If it was part of a chord, deactivate the whole chord
             if chord_id is not None and chord_id == self.active_chord_id:
                 chord = next((c for c in self.chords if c['id'] == chord_id), None)
@@ -863,12 +883,6 @@ class StaffWidget(QWidget):
                     for cid in chord['note_ids']:
                         self.active_note_ids.discard(cid)
                     self.active_chord_id = None
-        
-        # Also unmark NoteWidget as played to restore original color
-        if hasattr(self, 'song_widget') and self.song_widget.notes:
-            for note_widget in self.song_widget.notes:
-                if note_widget.pitch == pitch:
-                    note_widget.is_played = False
         
         self.update()
     
@@ -947,8 +961,8 @@ class StaffWidget(QWidget):
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(pen)
         
-        clef_size = int(55 * self.visual_zoom_scale)  # Appropriately sized clefs
-        clef_x = 15 * self.visual_zoom_scale  # Better positioning
+        clef_size = int(40 * self.visual_zoom_scale)  # Appropriately sized clefs
+        clef_x = 50 * self.visual_zoom_scale  # Better positioning
         
         if self.clef_type == "grand":
             # Draw TWO staves (Grand Staff) - Compact layout
@@ -980,18 +994,27 @@ class StaffWidget(QWidget):
                 painter.drawLine(self.left_margin, int(y), self.width(), int(y))
             
             # Draw bass clef with shadow
-            bass_clef_y = bass_center_y + self.staff_spacing + (20 * self.visual_zoom_scale)
+            bass_clef_y = bass_center_y + (5 * self.visual_zoom_scale)
             painter.setPen(QPen(QColor(0, 0, 0, 30), 1))
             painter.drawText(int(clef_x + 1), int(bass_clef_y + 1), "\uE062")
             painter.setPen(QPen(QColor(15, 15, 15), 1))
             painter.drawText(int(clef_x), int(bass_clef_y), "\uE062")
             
             # Draw brace connecting the staves
-            # Bravura brace: \uE000
-            brace_size = int(90 * self.visual_zoom_scale)  # Smaller for compact layout
+            # Bravura brace: \uE000 - Positioned at screen center and scaled to exact staff height
+            # Calculate exact height from top of treble staff to bottom of bass staff
+            treble_top = treble_center_y - (2 * self.staff_spacing)
+            bass_bottom = bass_center_y + (2.5 * self.staff_spacing)
+            total_height = bass_bottom - treble_top
+            
+            # Scale brace size to match the exact vertical span needed
+            brace_size = int(total_height * 1.2)  # 1.5 multiplier for proper glyph scaling
             painter.setFont(QFont(self.music_font_family, brace_size))
-            brace_y = (treble_center_y + bass_center_y) / 2 + (25 * self.visual_zoom_scale)
-            painter.drawText(int(5), int(brace_y), "\uE000")
+            
+            # Position brace: left-aligned, vertically centered on screen
+            brace_x = 1  # Left edge
+            brace_y = self.height() / 2 + (brace_size * 0.70)  # Vertical center of screen
+            painter.drawText(int(brace_x), int(brace_y), "\uE000")
             
             # Draw key signature, time signature, and tempo for both staves
             key_sig_x = clef_x + (55 * self.visual_zoom_scale)  # Closer to clef
@@ -1024,8 +1047,25 @@ class StaffWidget(QWidget):
                 clef_baseline_y = staff_center_y + self.staff_spacing + (20 * self.visual_zoom_scale)
                 painter.drawText(int(clef_x), int(clef_baseline_y), "\uE062")
             elif self.clef_type == "alto":
+                # Alto/Viola clef (C clef on 3rd line)
                 clef_baseline_y = staff_center_y + (40 * self.visual_zoom_scale)
                 painter.drawText(int(clef_x), int(clef_baseline_y), "\uE05C")
+            elif self.clef_type == "tenor":
+                # Tenor clef (C clef on 4th line)
+                clef_baseline_y = staff_center_y + self.staff_spacing + (30 * self.visual_zoom_scale)
+                painter.drawText(int(clef_x), int(clef_baseline_y), "\uE05C")
+            elif self.clef_type == "soprano":
+                # Soprano clef (C clef on 1st line)
+                clef_baseline_y = staff_center_y - (2 * self.staff_spacing) + (50 * self.visual_zoom_scale)
+                painter.drawText(int(clef_x), int(clef_baseline_y), "\uE05C")
+            elif self.clef_type == "mezzosoprano":
+                # Mezzosoprano clef (C clef on 2nd line)
+                clef_baseline_y = staff_center_y - self.staff_spacing + (45 * self.visual_zoom_scale)
+                painter.drawText(int(clef_x), int(clef_baseline_y), "\uE05C")
+            elif self.clef_type == "baritone":
+                # Baritone clef (F clef on 3rd line) - less common variant
+                clef_baseline_y = staff_center_y + (10 * self.visual_zoom_scale)
+                painter.drawText(int(clef_x), int(clef_baseline_y), "\uE062")
             
             # Draw key signature, time signature, and tempo
             key_sig_x = clef_x + (70 * self.visual_zoom_scale)

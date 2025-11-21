@@ -254,7 +254,16 @@ class MainWindow(QMainWindow):
         
         # Clef selector
         self.clef_selector = QComboBox()
-        self.clef_selector.addItems(["Grand Staff (Sol+Fa)", "Treble Clef (Sol)", "Bass Clef (Fa)", "Alto Clef (Do)"])
+        self.clef_selector.addItems([
+            "Grand Staff (Sol+Fa)",
+            "Treble Clef (Sol)",
+            "Bass Clef (Fa)",
+            "Alto Clef (Do)",
+            "Tenor Clef (Do)",
+            "Soprano Clef (Do)",
+            "Mezzosoprano Clef (Do)",
+            "Baritone Clef (Fa)"
+        ])
         self.clef_selector.setCurrentIndex(0)  # Default to Grand Staff
         self.clef_selector.currentIndexChanged.connect(self.change_clef)
         self.clef_selector.setStyleSheet("""
@@ -264,7 +273,7 @@ class MainWindow(QMainWindow):
                 border: none;
                 border-radius: 4px;
                 padding: 5px 10px;
-                min-width: 120px;
+                min-width: 160px;
             }
             QComboBox:hover {
                 background-color: #4a5f7f;
@@ -971,7 +980,7 @@ class MainWindow(QMainWindow):
     
     def change_clef(self, index):
         """Change musical clef type"""
-        clef_types = ["grand", "treble", "bass", "alto"]
+        clef_types = ["grand", "treble", "bass", "alto", "tenor", "soprano", "mezzosoprano", "baritone"]
         if index < len(clef_types):
             self.score_view.clef_type = clef_types[index]
             # Recalculate note positions for new clef
@@ -1199,11 +1208,25 @@ class MainWindow(QMainWindow):
     
     def on_staff_note_triggered(self, pitch, velocity):
         """Called when a note crosses the red line on the staff"""
-        self._activate_piano_key(pitch, velocity, play_audio=True)
+        # In Practice mode, NEVER auto-play - user must press keys manually
+        should_play = True
+        if hasattr(self, 'training_manager'):
+            mode_name = self.training_manager.get_current_mode_name()
+            if mode_name == 'Practice':
+                should_play = False  # Show visual but no audio
+        
+        self._activate_piano_key(pitch, velocity, play_audio=should_play)
     
     def on_staff_note_ended(self, pitch):
         """Called when a note ends (crosses red line + duration)"""
-        self._deactivate_piano_key(pitch, stop_audio=True)
+        # In Practice mode, don't auto-stop - user controls audio
+        should_stop = True
+        if hasattr(self, 'training_manager'):
+            mode_name = self.training_manager.get_current_mode_name()
+            if mode_name == 'Practice':
+                should_stop = False  # User controls when to stop
+        
+        self._deactivate_piano_key(pitch, stop_audio=should_stop)
     
     def on_playback_note_on(self, note, velocity):
         """Called when the MIDI file plays a note"""
