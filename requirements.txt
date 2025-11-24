@@ -5,5 +5,4 @@ music21
 numpy
 verovio
 pygame
-pyfluidsynth
 scipy

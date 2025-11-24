@@ -252,6 +252,8 @@ class StaffWidget(QWidget):
             
             # Combine all tracks into single timeline
             events = []
+            channel_note_counts = {}  # Count notes per channel
+            
             for track_idx, track in enumerate(mid.tracks):
                 current_tick = 0
                 current_tempo = tempo
@@ -264,16 +266,41 @@ class StaffWidget(QWidget):
                         current_tempo = msg.tempo
                     
                     if msg.type in ['note_on', 'note_off']:
+                        channel = msg.channel if hasattr(msg, 'channel') else 0
+                        
+                        # FILTER: Skip percussion channel (9 in MIDI)
+                        if channel == 9:
+                            continue
+                        
                         # Convert ticks to seconds
                         time_seconds = mido.tick2second(current_tick, ticks_per_beat, current_tempo)
+                        
+                        # Count notes per channel
+                        if msg.type == 'note_on' and msg.velocity > 0:
+                            channel_note_counts[channel] = channel_note_counts.get(channel, 0) + 1
                         
                         events.append({
                             'time': time_seconds,
                             'type': msg.type,
                             'note': msg.note,
                             'velocity': msg.velocity if hasattr(msg, 'velocity') else 0,
-                            'track': track_idx
+                            'track': track_idx,
+                            'channel': channel
                         })
+            
+            # Smart filtering: If one channel has significantly fewer notes, use only that one
+            # This handles cases where one channel is melody and others are accompaniment
+            if len(channel_note_counts) > 1:
+                sorted_channels = sorted(channel_note_counts.items(), key=lambda x: x[1])
+                min_channel, min_count = sorted_channels[0]
+                max_channel, max_count = sorted_channels[-1]
+                
+                # If the ratio is more than 3:1, keep only the smaller channel (likely the melody)
+                if max_count > min_count * 3:
+                    events = [e for e in events if e['channel'] == min_channel]
+                    print(f"StaffWidget: Filtered to channel {min_channel} ({min_count} notes) - removed {max_count} background notes")
+                else:
+                    print(f"StaffWidget: Keeping all channels ({sum(channel_note_counts.values())} total notes)")
             
             # Sort all events by time
             events.sort(key=lambda e: e['time'])
@@ -1323,13 +1350,13 @@ class StaffWidget(QWidget):
             
             # Determine color based on state
             if note_widget.is_played:
-                note_color = self.played_note_color  # Blue for played notes
+                note_color = self.played_note_color  # Configured color for played notes
             elif note_widget.is_correct is True:
                 note_color = QColor(0, 255, 0, 180)  # Green for correct
             elif note_widget.is_correct is False:
                 note_color = QColor(255, 0, 0, 180)  # Red for incorrect
             else:
-                note_color = QColor(138, 43, 226, 200)  # Purple (default)
+                note_color = QColor(0, 0, 0, 255)  # Black (default)
             
             # Render the note
             note_widget.render(painter, note_x, note_y, note_color)

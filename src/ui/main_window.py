@@ -37,8 +37,8 @@ class MainWindow(QMainWindow):
         # Initialize Core Components
         # Try to find a soundfont in assets
         sf_path = os.path.join(os.getcwd(), "assets", "soundfonts", "default.sf2")
+        
         if not os.path.exists(sf_path):
-            # Fallback or ask user? For now just warn
             print("No default soundfont found.")
         
         self.synth = PianoSynth(sf_path)
@@ -730,52 +730,125 @@ class MainWindow(QMainWindow):
     
     def open_train_dialog(self):
         """Open training mode selection dialog"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QButtonGroup
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QFrame
+        from PyQt6.QtCore import Qt
         
         dialog = QDialog(self)
-        dialog.setWindowTitle("Select Training Mode")
-        dialog.setMinimumWidth(400)
+        dialog.setWindowTitle("Modos de Entrenamiento")
+        dialog.setMinimumWidth(500)
+        dialog.setStyleSheet("""
+            QDialog {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1e3c72, stop:1 #2a5298);
+            }
+        """)
         
         layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+        layout.setContentsMargins(25, 25, 25, 25)
         
-        # Title
-        title = QLabel("Selecciona un Modo de Entrenamiento")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px;")
-        layout.addWidget(title)
+        # Title with icon
+        title_frame = QFrame()
+        title_frame.setStyleSheet("background: transparent;")
+        title_layout = QVBoxLayout(title_frame)
+        title_layout.setContentsMargins(0, 0, 0, 15)
         
-        # Mode buttons
-        btn_play = QPushButton("Reproducir\nSimplemente reproduce la canción")
-        btn_play.setMinimumHeight(60)
-        btn_play.setStyleSheet("text-align: left; padding: 10px;")
-        btn_play.clicked.connect(lambda: self.select_mode("Play", dialog))
-        layout.addWidget(btn_play)
+        title = QLabel("🎹 Modos de Entrenamiento")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("""
+            font-size: 24px; 
+            font-weight: bold; 
+            color: white;
+            padding: 10px;
+        """)
+        title_layout.addWidget(title)
         
-        btn_master = QPushButton("Maestro\nMuestra y toca automáticamente")
-        btn_master.setMinimumHeight(60)
-        btn_master.setStyleSheet("text-align: left; padding: 10px;")
-        btn_master.clicked.connect(lambda: self.select_mode("Master", dialog))
-        layout.addWidget(btn_master)
+        subtitle = QLabel("Selecciona cómo quieres practicar")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("""
+            font-size: 13px; 
+            color: #b8c6db;
+            margin-bottom: 10px;
+        """)
+        title_layout.addWidget(subtitle)
         
-        btn_student = QPushButton("Estudiante\nPrograma toca 4 acordes, tú los repites")
-        btn_student.setMinimumHeight(60)
-        btn_student.setStyleSheet("text-align: left; padding: 10px;")
-        btn_student.clicked.connect(lambda: self.select_mode("Student", dialog))
-        layout.addWidget(btn_student)
+        layout.addWidget(title_frame)
         
-        btn_practice = QPushButton("Práctica\nIlumina teclas, presiónalas para avanzar")
-        btn_practice.setMinimumHeight(60)
-        btn_practice.setStyleSheet("text-align: left; padding: 10px;")
-        btn_practice.clicked.connect(lambda: self.select_mode("Practice", dialog))
-        layout.addWidget(btn_practice)
+        # Mode button style
+        mode_btn_style = """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 %s, stop:1 %s);
+                color: white;
+                border: 2px solid %s;
+                border-radius: 12px;
+                padding: 15px;
+                text-align: left;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 %s, stop:1 %s);
+                border: 2px solid white;
+                transform: scale(1.02);
+            }
+            QPushButton:pressed {
+                background: %s;
+            }
+        """
         
-        btn_corrector = QPushButton("Corrector\nCorrige errores anteriores")
-        btn_corrector.setMinimumHeight(60)
-        btn_corrector.setStyleSheet("text-align: left; padding: 10px;")
-        btn_corrector.clicked.connect(lambda: self.select_mode("Corrector", dialog))
-        layout.addWidget(btn_corrector)
+        # Mode buttons with colors and icons
+        modes = [
+            ("▶️  Reproducir", "Simplemente reproduce la canción\nPerfecto para escuchar y aprender", 
+             "#27ae60", "#2ecc71", "#229954", "#2ecc71", "#34d058", "#1e8449", "Play"),
+            ("🎹  Maestro", "Muestra y toca automáticamente\nObserva cómo se tocan las notas", 
+             "#2980b9", "#3498db", "#2471a3", "#3498db", "#5dade2", "#1f618d", "Master"),
+            ("🎓  Estudiante", "Programa toca 4 acordes, tú los repites\nAprende por imitación", 
+             "#8e44ad", "#9b59b6", "#7d3c98", "#9b59b6", "#af7ac5", "#6c3483", "Student"),
+            ("📝  Práctica", "Ilumina teclas, presiónalas para avanzar\nEntrena con retroalimentación", 
+             "#e67e22", "#f39c12", "#d68910", "#f39c12", "#f8b739", "#ca6f1e", "Practice"),
+            ("✏️  Corrector", "Corrige errores anteriores\nMejora tus puntos débiles", 
+             "#c0392b", "#e74c3c", "#a93226", "#e74c3c", "#ec7063", "#922b21", "Corrector")
+        ]
+        
+        for icon_title, description, color1, color2, color3, hover1, hover2, pressed, mode_name in modes:
+            btn = QPushButton()
+            
+            # Use simple text format with line breaks
+            btn_text = f"{icon_title}\n{description}"
+            btn.setText(btn_text)
+            btn.setMinimumHeight(75)
+            btn.setStyleSheet(mode_btn_style % (color1, color2, color3, hover1, hover2, pressed))
+            btn.clicked.connect(lambda checked, m=mode_name: self.select_mode(m, dialog))
+            layout.addWidget(btn)
+        
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet("background-color: rgba(255, 255, 255, 0.3); max-height: 1px;")
+        layout.addWidget(separator)
         
         # Cancel button
-        btn_cancel = QPushButton("Cancelar")
+        btn_cancel = QPushButton("✕  Cancelar")
+        btn_cancel.setMinimumHeight(45)
+        btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(44, 62, 80, 0.8);
+                color: white;
+                border: 2px solid #7f8c8d;
+                border-radius: 8px;
+                padding: 10px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(52, 73, 94, 0.9);
+                border: 2px solid #95a5a6;
+            }
+            QPushButton:pressed {
+                background-color: rgba(34, 49, 63, 1);
+            }
+        """)
         btn_cancel.clicked.connect(dialog.reject)
         layout.addWidget(btn_cancel)
         

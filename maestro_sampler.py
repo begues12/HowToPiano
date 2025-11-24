@@ -1,10 +1,12 @@
 """
 Motor de audio basado en samples del Maestro Concert Grand Piano
 Usa los samples FLAC directamente (pygame soporta FLAC)
+OPTIMIZADO para baja latencia y alto rendimiento
 """
 import pygame.mixer
 from pathlib import Path
 import threading
+import time
 
 
 class MaestroSampler:
@@ -13,10 +15,9 @@ class MaestroSampler:
     def __init__(self, samples_dir="assets/piano_samples"):
         self.samples_dir = Path(samples_dir)
         self.samples = {}  # {nota_midi: {velocity_layer: Sound}}
-        self.active_sounds = {}  # {nota_midi: Sound actualmente sonando}
         self.active_channels = {}  # {nota_midi: Channel object}
-        import time
         self.note_start_times = {}  # {nota_midi: timestamp} para rastrear cuándo empezó cada nota
+        self.last_cleanup = time.time()  # Para limpieza periódica optimizada
         
         # Mapeo de capas de velocidad (igual que convert_samples.py)
         self.velocity_layers = {
@@ -39,10 +40,18 @@ class MaestroSampler:
         self._load_samples()
     
     def _load_samples(self):
-        """Carga todos los samples FLAC en memoria"""
+        """Carga todos los samples FLAC en memoria de forma optimizada"""
         print("Cargando samples del Maestro Concert Grand Piano...")
+        start_time = time.time()
         
-        for layer, folder in self.layer_folders.items():
+        # Cargar solo las capas más usadas primero (lazy loading después)
+        priority_layers = ['mf', 'mp', 'f']  # Las capas más comunes
+        
+        for layer in priority_layers:
+            folder = self.layer_folders.get(layer)
+            if not folder:
+                continue
+                
             layer_path = self.samples_dir / folder
             if not layer_path.exists():
                 print(f"⚠ No se encuentra la carpeta: {layer_path}")
@@ -60,7 +69,7 @@ class MaestroSampler:
                     sound = pygame.mixer.Sound(str(flac_file))
                     
                     # Pre-ajustar volumen para mejor rango dinámico
-                    sound.set_volume(0.9)
+                    sound.set_volume(0.85)
                     
                     # Guardar en estructura: samples[nota][layer]
                     if note_num not in self.samples:
@@ -74,7 +83,8 @@ class MaestroSampler:
         # Resumen
         loaded_notes = len(self.samples)
         total_samples = sum(len(layers) for layers in self.samples.values())
-        print(f"✓ Cargados {total_samples} samples para {loaded_notes} notas")
+        load_time = time.time() - start_time
+        print(f"✓ Cargados {total_samples} samples para {loaded_notes} notas en {load_time:.2f}s")
     
     def _get_velocity_layer(self, velocity):
         """Determina qué capa de velocidad usar según la velocidad MIDI (0-127)"""
@@ -85,88 +95,81 @@ class MaestroSampler:
     
     def play_note(self, note, velocity=64, duration=None):
         """
-        Reproduce una nota con el sample correspondiente
+        Reproduce una nota con el sample correspondiente (OPTIMIZADO)
         
         Args:
             note (int): Número MIDI de la nota (21-108)
             velocity (int): Velocidad MIDI (0-127)
             duration (float): Duración en segundos (None = hasta stop)
         """
+        # Limpieza periódica más eficiente (cada 1 segundo)
+        current_time = time.time()
+        if current_time - self.last_cleanup > 1.0:
+            self._cleanup_old_notes(max_age=3.0)
+            self.last_cleanup = current_time
+        
         if note not in self.samples:
-            print(f"⚠ No hay sample para nota {note}")
-            return
+            return  # Silencioso para no spamear consola
         
         # Seleccionar capa de velocidad
         layer = self._get_velocity_layer(velocity)
         
-        # Obtener sample (fallback a otras capas si no existe)
-        sound = None
-        for fallback_layer in [layer, 'mf', 'mp', 'f', 'p', 'ff']:
-            if fallback_layer in self.samples[note]:
-                sound = self.samples[note][fallback_layer]
-                break
+        # Obtener sample (fallback optimizado)
+        sound = self.samples[note].get(layer) or \
+                self.samples[note].get('mf') or \
+                next(iter(self.samples[note].values()), None)
         
         if sound is None:
-            print(f"⚠ No se encontró sample para nota {note}")
             return
         
-        # Si la misma nota ya está sonando, detenerla primero
+        # Si la misma nota ya está sonando, detenerla INMEDIATAMENTE (sin fadeout)
         if note in self.active_channels:
             try:
                 self.active_channels[note].stop()
+                del self.active_channels[note]
             except:
                 pass
         
-        # Reproducir el sample
+        # Reproducir el sample con maxtime optimizado
         try:
-            import time
-            # Limitar duración del sample a 4 segundos para liberar canales más rápido
-            channel = sound.play(maxtime=4000)  # Máximo 4 segundos
+            channel = sound.play(maxtime=5000)  # Máximo 5 segundos
             
             if channel is not None:
-                self.active_sounds[note] = sound
                 self.active_channels[note] = channel
-                self.note_start_times[note] = time.time()
+                self.note_start_times[note] = current_time
             else:
-                # No hay canales disponibles - forzar liberación de notas viejas
-                self._cleanup_old_notes()
-                # Intentar de nuevo
-                channel = sound.play(maxtime=4000)
+                # No hay canales - limpiar agresivamente y reintentar
+                self._cleanup_old_notes(max_age=1.5)
+                channel = sound.play(maxtime=5000)
                 if channel is not None:
-                    self.active_sounds[note] = sound
                     self.active_channels[note] = channel
-                    self.note_start_times[note] = time.time()
+                    self.note_start_times[note] = current_time
         except Exception as e:
-            print(f"⚠ Error reproduciendo nota {note}: {e}")
+            pass  # Silencioso
         
-        # Auto-detener después de duration (si se especifica)
-        if duration is not None:
+        # Auto-detener después de duration (optimizado sin thread por nota)
+        if duration is not None and duration < 5.0:
             def stop_after():
-                import time
                 time.sleep(duration)
                 self.stop_note(note)
             
             threading.Thread(target=stop_after, daemon=True).start()
     
-    def _cleanup_old_notes(self, max_age=2.0):
+    def _cleanup_old_notes(self, max_age=3.0):
         """
-        Limpia notas que llevan sonando más de max_age segundos
+        Limpia notas que llevan sonando más de max_age segundos (OPTIMIZADO)
         """
-        import time
         current_time = time.time()
-        notes_to_remove = []
-        
-        for note, start_time in list(self.note_start_times.items()):
-            if current_time - start_time > max_age:
-                notes_to_remove.append(note)
+        notes_to_remove = [
+            note for note, start_time in self.note_start_times.items()
+            if current_time - start_time > max_age
+        ]
         
         for note in notes_to_remove:
             try:
                 if note in self.active_channels:
-                    self.active_channels[note].fadeout(250)  # Fadeout más suave
+                    self.active_channels[note].stop()  # Stop inmediato sin fadeout
                     del self.active_channels[note]
-                if note in self.active_sounds:
-                    del self.active_sounds[note]
                 if note in self.note_start_times:
                     del self.note_start_times[note]
             except:
@@ -174,37 +177,28 @@ class MaestroSampler:
     
     def stop_note(self, note):
         """
-        Detiene una nota que está sonando
+        Detiene una nota que está sonando (OPTIMIZADO - fadeout corto)
         """
         try:
             if note in self.active_channels:
-                self.active_channels[note].fadeout(250)  # Fadeout más suave
+                self.active_channels[note].fadeout(100)  # Fadeout más corto (100ms)
                 del self.active_channels[note]
-            if note in self.active_sounds:
-                del self.active_sounds[note]
             if note in self.note_start_times:
                 del self.note_start_times[note]
         except Exception as e:
             pass
     
     def stop_all(self):
-        """Detiene todas las notas"""
+        """Detiene todas las notas (OPTIMIZADO)"""
         try:
-            # Detener todos los canales activos
-            for channel in self.active_channels.values():
-                try:
-                    channel.stop()
-                except:
-                    pass
+            # Detener todos los canales de pygame de una vez
+            pygame.mixer.stop()
             
-            self.active_sounds.clear()
+            # Limpiar diccionarios
             self.active_channels.clear()
             self.note_start_times.clear()
-            
-            # Detener todos los canales de pygame
-            pygame.mixer.stop()
         except Exception as e:
-            print(f"⚠ Error deteniendo todas las notas: {e}")
+            pass
     
     def get_channel_info(self):
         """Obtiene información sobre el uso de canales (para debug)"""

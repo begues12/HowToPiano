@@ -4,15 +4,7 @@ import time
 import numpy as np
 
 # Try to import audio libraries
-FLUIDSYNTH_AVAILABLE = False
 PYGAME_AVAILABLE = False
-
-try:
-    import fluidsynth
-    FLUIDSYNTH_AVAILABLE = True
-    print("FluidSynth module loaded successfully")
-except (ImportError, FileNotFoundError, OSError) as e:
-    print(f"FluidSynth not available ({e})")
 
 try:
     import pygame.mixer
@@ -58,13 +50,11 @@ class MidiEngine(QObject):
         self.audio_synth = None
         self.sfid = None
         self.maestro_sampler = None
-        self.audio_type = None  # 'maestro', 'fluidsynth', 'pygame', or None
+        self.audio_type = None  # 'maestro', 'pygame', or None
         
-        # Priority: Maestro samples > FluidSynth > Pygame synthesis
+        # Priority: Maestro samples > Pygame synthesis
         if MAESTRO_AVAILABLE:
             self._init_maestro_sampler()
-        elif FLUIDSYNTH_AVAILABLE:
-            self._init_audio()
         elif PYGAME_AVAILABLE:
             self._init_pygame_audio()
         
@@ -91,58 +81,33 @@ class MidiEngine(QObject):
         # Preparation time (seconds notes appear before they should be played)
         self.preparation_time = 3.0  # Default - will be set by MainWindow
     
-    def _init_audio(self):
-        """Initialize FluidSynth for audio playback"""
-        try:
-            self.audio_synth = fluidsynth.Synth()
-            self.audio_synth.start(driver="dsound")  # DirectSound on Windows
-            
-            # Try to load a soundfont
-            import os
-            soundfont_paths = [
-                "C:\\soundfonts\\FluidR3_GM.sf2",
-                "C:\\soundfonts\\piano.sf2",
-                os.path.join(os.path.expanduser("~"), "soundfonts", "piano.sf2"),
-            ]
-            
-            for sf_path in soundfont_paths:
-                if os.path.exists(sf_path):
-                    self.sfid = self.audio_synth.sfload(sf_path)
-                    self.audio_synth.program_select(0, self.sfid, 0, 0)  # Piano
-                    self.audio_type = 'fluidsynth'
-                    print(f"Audio: Loaded soundfont {sf_path}")
-                    return
-            
-            print("Warning: No soundfont found. Download a .sf2 file to C:\\soundfonts\\")
-        except Exception as e:
-            print(f"Audio init failed: {e}")
-            self.audio_synth = None
-    
     def _init_pygame_audio(self):
-        """Initialize pygame for high-quality audio synthesis"""
+        """Initialize pygame for high-quality audio synthesis (OPTIMIZADO)"""
         try:
-            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
+            # Buffer más pequeño = menor latencia
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            pygame.mixer.set_num_channels(64)  # Suficiente para la mayoría de casos
             self.audio_type = 'pygame'
             self.active_sounds = {}  # {note: Sound object}
-            print("Audio: Using pygame synthesizer (44.1kHz)")
+            print("Audio: Using pygame synthesizer (44.1kHz, low-latency)")
         except Exception as e:
             print(f"Pygame audio init failed: {e}")
             self.audio_type = None
     
     def _init_maestro_sampler(self):
-        """Initialize Maestro Concert Grand Piano sampler"""
+        """Initialize Maestro Concert Grand Piano sampler (OPTIMIZADO)"""
         try:
-            # Initialize pygame.mixer first (needed for sample playback)
-            # Increase channels to 128 for more simultaneous notes and reduce buffer for lower latency
-            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=256)
-            pygame.mixer.set_num_channels(128)
-            # Reserve some channels to prevent critical notes from being cut
-            pygame.mixer.set_reserved(16)
+            # OPTIMIZACIÓN: Buffer pequeño (256) + muchos canales (256) + pre-mixing
+            # Pre-mixing permite mejor rendimiento con samples pregrabados
+            pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=256, allowedchanges=0)
+            pygame.mixer.init()
+            pygame.mixer.set_num_channels(256)  # Muchos canales para evitar que se salten notas
+            pygame.mixer.set_reserved(32)  # Reservar canales críticos
             
             # Load Maestro samples
             self.maestro_sampler = MaestroSampler()
             self.audio_type = 'maestro'
-            print("Audio: Using Maestro Concert Grand Piano samples")
+            print(f"Audio: Maestro Piano (256 channels, buffer=256, low-latency)")
         except Exception as e:
             print(f"Maestro sampler init failed: {e}")
             self.audio_type = None
@@ -630,9 +595,7 @@ class MidiEngine(QObject):
         self.synth.note_on(note, velocity)  # User feedback sound
         
         # Play audio for user input
-        if self.audio_type == 'fluidsynth' and self.audio_synth:
-            self.audio_synth.noteon(0, note, velocity)
-        elif self.audio_type in ['maestro', 'pygame']:
+        if self.audio_type in ['maestro', 'pygame']:
             self._play_note_pygame(note, velocity)
         
         # PRACTICE MODE: Check if this is the note we're waiting for
@@ -663,15 +626,7 @@ class MidiEngine(QObject):
         self.synth.note_off(note)
         
         # Stop audio for user input
-        if self.audio_type == 'fluidsynth' and self.audio_synth:
-            self.audio_synth.noteoff(0, note)
-        elif self.audio_type in ['maestro', 'pygame']:
-            self._stop_note_pygame(note)
-        
-        # Stop audio for user input
-        if self.audio_type == 'fluidsynth' and self.audio_synth:
-            self.audio_synth.noteoff(0, note)
-        elif self.audio_type == 'pygame':
+        if self.audio_type in ['maestro', 'pygame']:
             self._stop_note_pygame(note)
     
     def record_mistake(self, note, expected_note, time_occurred):
