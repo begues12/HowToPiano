@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VexFlow Score</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #ffffff;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+        #canvas-container {
+            display: block; /* Changed from flex to block to avoid centering clipping */
+            /* justify-content: flex-start; */
+            padding-top: 50px;
+            padding-left: 20px; /* Add some padding on the left */
+            min-width: fit-content; /* Ensure container grows with content */
+   
+        }
+        .cursor {
+            position: absolute;
+            top: 50px;
+            width: 2px;
+            height: 200px;
+            background-color: rgba(255, 0, 0, 0.7);
+            pointer-events: none;
+            z-index: 100;
+            display: none;
+        }
+    </style>
+    <!-- Load VexFlow from local file -->
+    <script src="vexflow.js"></script>
+</head>
+<body>
+    <div id="cursor" class="cursor"></div>
+    <div id="canvas-container">
+        <div id="output"></div>
+    </div>
+
+    <script>
+        // Wait for VexFlow to load
+        window.addEventListener('load', () => {
+            if (typeof Vex === 'undefined') {
+                console.error("VexFlow library not loaded!");
+                document.getElementById("output").innerHTML = "Error: VexFlow library not loaded.";
+                return;
+            }
+
+            const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, StaveConnector } = Vex.Flow;
+
+            let renderer, context;
+            let currentNotes = [];
+            let staveTreble, staveBass;
+            let noteDataMap = []; // Stores metadata like start_time for each note
+            
+            // Initialize VexFlow
+            function initVexFlow() {
+                const div = document.getElementById("output");
+                div.innerHTML = ""; // Clear previous
+                
+                renderer = new Renderer(div, Renderer.Backends.SVG);
+                
+                // Configure size
+                renderer.resize(1200, 500);
+                context = renderer.getContext();
+            }
+
+            // Render a simple score (Test function)
+            function renderSample() {
+                initVexFlow();
+                
+                // Create Grand Staff
+                staveTreble = new Stave(20, 40, 1000); // Increased x to 20
+                staveTreble.addClef("treble").addTimeSignature("4/4");
+                staveTreble.setContext(context).draw();
+                
+                staveBass = new Stave(20, 150, 1000); // Increased x to 20
+                staveBass.addClef("bass").addTimeSignature("4/4");
+                staveBass.setContext(context).draw();
+                
+                new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.BRACE).setContext(context).draw();
+                new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_LEFT).setContext(context).draw();
+                new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_RIGHT).setContext(context).draw();
+
+                const notes = [
+                    new StaveNote({ keys: ["c/4"], duration: "q" }),
+                    new StaveNote({ keys: ["d/4"], duration: "q" }),
+                    new StaveNote({ keys: ["b/4"], duration: "qr" }),
+                    new StaveNote({ keys: ["c/4", "e/4", "g/4"], duration: "q" })
+                ];
+
+                const voice = new Voice({num_beats: 4,  beat_value: 4});
+                voice.addTickables(notes);
+
+                new Formatter().joinVoices([voice]).format([voice], 900);
+
+                voice.draw(context, staveTreble);
+                currentNotes = notes;
+            }
+
+            // Function called from Python to render notes
+            // notesData: Array of {keys: ["c/4"], duration: "q", color: "black", pitch: 60, start_time: 0.0}
+            window.renderNotes = function(notesData) {
+                initVexFlow();
+                noteDataMap = notesData; // Store for cursor mapping
+                
+                // Calculate required width based on number of notes
+                const width = Math.max(1000, notesData.length * 60);
+                renderer.resize(width + 50, 500);
+                
+                // Create Grand Staff
+                staveTreble = new Stave(20, 40, width); // Increased x to 20
+                staveTreble.addClef("treble").addTimeSignature("4/4");
+                staveTreble.setContext(context).draw();
+                
+                staveBass = new Stave(20, 160, width); // Increased x to 20
+                staveBass.addClef("bass").addTimeSignature("4/4");
+                staveBass.setContext(context).draw();
+                
+                new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.BRACE).setContext(context).draw();
+                new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_LEFT).setContext(context).draw();
+                new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_RIGHT).setContext(context).draw();
+
+                // Split notes into Treble and Bass
+                const trebleNotes = [];
+                const bassNotes = [];
+                
+                // We need to group notes by time to form chords, but for now let's keep it simple
+                // VexFlow needs synchronized voices. This is complex for arbitrary MIDI.
+                // Simplified approach: Put everything in Treble for now, or try to split intelligently.
+                // Splitting voices requires matching durations.
+                
+                // Let's stick to single staff for now but make it look better, OR
+                // render everything on Treble but with ledger lines (VexFlow handles this).
+                // To do Grand Staff properly, we need to process the MIDI into two separate tracks/voices in Python.
+                
+                // For this iteration, let's render on Treble but allow ledger lines to go down to Bass area visually
+                // But wait, user asked for "decorar más". Grand Staff is a big decoration.
+                
+                // Let's try a simple split: if average pitch < 60, go to bass? No, that breaks synchronization.
+                // We will render everything on the Treble stave for now to ensure rhythm is correct,
+                // but we will draw the Bass stave empty for "decoration".
+                
+                const notes = notesData.map(n => {
+                    const note = new StaveNote({ 
+                        keys: n.keys, 
+                        duration: n.duration,
+                        auto_stem: true,
+                        clef: "treble"
+                    });
+                    
+                    if (n.color) {
+                        note.setStyle({fillStyle: n.color, strokeStyle: n.color});
+                    }
+                    
+                    // Store ID for later reference if needed
+                    note.id = n.id;
+                    return note;
+                });
+
+                // Create beams automatically
+                const beams = Beam.generateBeams(notes);
+
+                const voice = new Voice({num_beats: notesData.length, beat_value: 4}); // Simplified beat counting
+                voice.setStrict(false); // Allow arbitrary number of notes
+                voice.addTickables(notes);
+
+                new Formatter().joinVoices([voice]).format([voice], width - 50);
+
+                voice.draw(context, staveTreble);
+                beams.forEach(b => b.setContext(context).draw());
+                
+                currentNotes = notes;
+            }
+
+            // Highlight a specific note by index
+            window.highlightNote = function(index, color) {
+                if (index >= 0 && index < currentNotes.length) {
+                    const note = currentNotes[index];
+                    const group = note.getAttribute("el"); 
+                    if(group) {
+                        const paths = group.querySelectorAll("path");
+                        paths.forEach(p => {
+                            p.setAttribute("fill", color);
+                            p.setAttribute("stroke", color);
+                        });
+                    }
+                }
+            }
+
+            // Move cursor to x position
+            window.moveCursor = function(x) {
+                const cursor = document.getElementById("cursor");
+                cursor.style.display = "block";
+                cursor.style.left = (x + 10) + "px"; // Offset for stave padding
+                cursor.style.height = "220px"; // Cover both staves
+            }
+            
+            // Update cursor based on time
+            window.updateCursor = function(time) {
+                // Find the note that is active at this time
+                // noteDataMap has start_time.
+                // We want the note where start_time <= time
+                
+                let targetNoteIndex = -1;
+                for(let i = 0; i < noteDataMap.length; i++) {
+                    if (noteDataMap[i].start_time <= time) {
+                        targetNoteIndex = i;
+                    } else {
+                        break;
+                    }
+                }
+                
+                if (targetNoteIndex >= 0 && targetNoteIndex < currentNotes.length) {
+                    const note = currentNotes[targetNoteIndex];
+                    // Get X position of the note
+                    // VexFlow StaveNote has getAbsoluteX()
+                    const x = note.getAbsoluteX();
+                    moveCursor(x);
+                    
+                    // Auto-scroll if cursor goes off screen
+                    const container = document.body; // or window
+                    if (x > window.scrollX + window.innerWidth - 200) {
+                        window.scrollTo(x - 100, 0);
+                    }
+                } else if (time <= 0) {
+                    moveCursor(10); // Start
+                    window.scrollTo(0, 0);
+                }
+            }
+            
+            // Set Zoom
+            window.setZoom = function(scale) {
+                const container = document.getElementById("canvas-container");
+                container.style.transform = `scale(${scale})`;
+                container.style.transformOrigin = "top left";
+                // Adjust body width to allow scrolling
+                // document.body.style.width = (container.offsetWidth * scale) + "px";
+            }
+
+            // Initial render
+            renderSample();
+        });
+    </script>
+</body>
+</html>

@@ -15,7 +15,8 @@ from src.core.midi_input import MidiInputWorker
 from src.core.synth import PianoSynth
 from src.core.midi_engine import MidiEngine
 from src.ui.score_view import SongLibrary
-from src.ui.staff_widget import StaffWidget
+# from src.ui.staff_widget import StaffWidget  # Replaced by WebScoreWidget
+from src.ui.web_score_widget import WebScoreWidget
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.piano_widget import PianoWidget
 from src.ui.song_list_widget import SongListWidget
@@ -91,7 +92,8 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(controls_widget)
         
         # Staff Widget (Interactive pentagram - takes most space)
-        self.score_view = StaffWidget()
+        # self.score_view = StaffWidget()
+        self.score_view = WebScoreWidget()
         self.score_view.setMinimumHeight(400)
         right_layout.addWidget(self.score_view, stretch=10)
         
@@ -110,25 +112,25 @@ class MainWindow(QMainWindow):
         self.piano_widget.show_finger_colors = self.settings.get("show_finger_colors", True)
         
         # Apply played note color to staff
-        self.score_view.played_note_color = self.get_played_note_color()
+        # self.score_view.played_note_color = self.get_played_note_color()
         self.piano_widget.show_finger_numbers = self.settings.get("show_finger_numbers", True)
         self.piano_widget.show_active_note_colors = self.settings.get("show_active_note_colors", True)
         
         # Apply visual zoom to staff widget
         visual_zoom = self.settings.get("visual_zoom", 100)
         zoom_scale = visual_zoom / 100.0
-        self.score_view.visual_zoom_scale = zoom_scale
-        self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
-        self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
+        # self.score_view.visual_zoom_scale = zoom_scale
+        # self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
+        # self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
         
         # Apply saved visual settings to staff
-        self.score_view.show_note_colors = self.settings.get("show_staff_note_colors", True)
+        # self.score_view.show_note_colors = self.settings.get("show_staff_note_colors", True)
         
         # Apply preparation time from settings
-        self.score_view.preparation_time = self.settings.get("preparation_time", 3)
+        # self.score_view.preparation_time = self.settings.get("preparation_time", 3)
         
         # Disable proportional spacing (using pure time-based triggering)
-        self.score_view.use_proportional_spacing = False
+        # self.score_view.use_proportional_spacing = False
         
         main_v_layout.addWidget(self.piano_widget)
 
@@ -545,6 +547,8 @@ class MainWindow(QMainWindow):
         self.training_manager.playback_update.connect(self.update_playback_time)
         self.training_manager.note_highlight.connect(self.on_mode_note_highlight)
         self.training_manager.note_unhighlight.connect(self.on_mode_note_unhighlight)
+        self.training_manager.staff_note_on.connect(self.on_mode_staff_note_on)
+        self.training_manager.staff_note_off.connect(self.on_mode_staff_note_off)
         self.training_manager.play_audio.connect(self.on_mode_play_audio)
         self.training_manager.stop_audio.connect(self.on_mode_stop_audio)
         self.training_manager.mode_message.connect(self.on_mode_message)
@@ -588,14 +592,14 @@ class MainWindow(QMainWindow):
                 self.zoom_spinbox.blockSignals(False)
                 
                 self.score_view.visual_zoom_scale = zoom_scale
-                self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
-                self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
+                # self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
+                # self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
                 
                 # Calculate pixels_per_second (for scroll speed only, not note positions)
                 # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
                 original_tempo_factor = self.score_view.tempo_bpm / 120.0
                 tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
-                self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
+                # self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
                 
                 # Recalculate Y positions only (for staff display)
                 for note in self.score_view.notes:
@@ -808,7 +812,7 @@ class MainWindow(QMainWindow):
             ("📝  Práctica", "Ilumina teclas, presiónalas para avanzar\nEntrena con retroalimentación", 
              "#e67e22", "#f39c12", "#d68910", "#f39c12", "#f8b739", "#ca6f1e", "Practice"),
             ("✏️  Corrector", "Corrige errores anteriores\nMejora tus puntos débiles", 
-             "#c0392b", "#e74c3c", "#a93226", "#e74c3c", "#ec7063", "#922b21", "Corrector")
+             "#c0392b", "#e74c3c", "#
         ]
         
         for icon_title, description, color1, color2, color3, hover1, hover2, pressed, mode_name in modes:
@@ -1130,32 +1134,32 @@ class MainWindow(QMainWindow):
         # Update visual zoom scale for staff appearance
         zoom_scale = value / 100.0
         self.score_view.visual_zoom_scale = zoom_scale
-        self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
-        self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
+        # self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
+        # self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
         
         # CRITICAL: Update pixels_per_second based on zoom, original tempo, AND tempo multiplier
         # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
         # This ensures all three factors are always respected
-        base_speed = 100
-        original_tempo_factor = self.score_view.tempo_bpm / 120.0
-        tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
-        self.score_view.pixels_per_second = base_speed * original_tempo_factor * tempo_multiplier * zoom_scale
+        # base_speed = 100
+        # original_tempo_factor = self.score_view.tempo_bpm / 120.0
+        # tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
+        # self.score_view.pixels_per_second = base_speed * original_tempo_factor * tempo_multiplier * zoom_scale
         
         # Recalculate Y positions if a song is loaded (for staff display)
-        if self.score_view.notes:
-            for note in self.score_view.notes:
-                # Recalculate y position with new staff spacing
-                note['y'] = self.score_view.pitch_to_y(note['pitch'])
+        # if self.score_view.notes:
+        #     for note in self.score_view.notes:
+        #         # Recalculate y position with new staff spacing
+        #         note['y'] = self.score_view.pitch_to_y(note['pitch'])
             
-            # Reset trigger state to prevent skipping notes
-            self.score_view.reset_triggers()
+        #     # Reset trigger state to prevent skipping notes
+        #     self.score_view.reset_triggers()
             
-            self.score_view.update()
+        #     self.score_view.update()
         
         # Save settings
         self.save_settings()
         tempo_mult = self.settings.get("playback_tempo", 100)
-        print(f"Visual zoom changed to {value}% (scroll speed: {self.score_view.pixels_per_second:.1f} px/s, tempo: {tempo_mult}%)")
+        # print(f"Visual zoom changed to {value}% (scroll speed: {self.score_view.pixels_per_second:.1f} px/s, tempo: {tempo_mult}%)")
     
     def change_tempo(self, value):
         """Change playback tempo (actual speed of music)"""
@@ -1175,20 +1179,20 @@ class MainWindow(QMainWindow):
         # Formula: pixels_per_second = base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
         # Example: Song at 90 BPM, tempo slider 50%, zoom 100%
         #   -> pixels_per_second = 100 * (90/120) * 0.5 * 1.0 = 37.5 px/s
-        original_tempo_factor = self.score_view.tempo_bpm / 120.0
-        tempo_multiplier = value / 100.0
-        self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * self.score_view.visual_zoom_scale
+        # original_tempo_factor = self.score_view.tempo_bpm / 120.0
+        # tempo_multiplier = value / 100.0
+        # self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * self.score_view.visual_zoom_scale
         
         # Reset trigger state when tempo changes
-        if self.score_view.notes:
-            self.score_view.update()
+        # if self.score_view.notes:
+        #     self.score_view.update()
         
         # CRITICAL: Reset trigger state to prevent skipping notes
-        self.score_view.reset_triggers()
+        # self.score_view.reset_triggers()
         
         # Save settings
         self.save_settings()
-        print(f"Playback tempo changed to {value}% (scroll speed: {self.score_view.pixels_per_second:.1f} px/s)")
+        # print(f"Playback tempo changed to {value}% (scroll speed: {self.score_view.pixels_per_second:.1f} px/s)")
 
     def on_zoom_spinbox_changed(self, value):
         """Handle zoom spinbox value changes"""
@@ -1243,23 +1247,23 @@ class MainWindow(QMainWindow):
                     self.zoom_spinbox.blockSignals(False)
                     
                     self.score_view.visual_zoom_scale = zoom_scale
-                    self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
-                    self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
+                    # self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
+                    # self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
                     
                     # Recalculate pixels_per_second with correct zoom AND tempo multiplier
                     # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
-                    original_tempo_factor = self.score_view.tempo_bpm / 120.0
-                    tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
-                    self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
+                    # original_tempo_factor = self.score_view.tempo_bpm / 120.0
+                    # tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
+                    # self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
                     
                     # Recalculate Y positions only (for staff display)
-                    for note in self.score_view.notes:
-                        note['y'] = self.score_view.pitch_to_y(note['pitch'])
+                    # for note in self.score_view.notes:
+                    #     note['y'] = self.score_view.pitch_to_y(note['pitch'])
                     
-                    print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
+                    # print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
                     
                     # Force repaint to show changes immediately
-                    self.score_view.update()
+                    # self.score_view.update()
                     
                     # Set progress bar duration
                     if self.midi_engine.events:
@@ -1270,15 +1274,15 @@ class MainWindow(QMainWindow):
                     self.adapt_song_to_piano()
                     
                     # Sync finger assignments from staff to piano
-                    self.sync_finger_assignments()
+                    # self.sync_finger_assignments()
                     
                     self.status_label.setText(f"{song['name']}")
                     self.btn_play.setEnabled(True)
                     
                     # Reset to start position LAST - after all other operations
                     # Use QTimer to ensure it happens after all pending UI updates
-                    from PyQt6.QtCore import QTimer
-                    QTimer.singleShot(50, self.score_view.go_to_start)
+                    # from PyQt6.QtCore import QTimer
+                    # QTimer.singleShot(50, self.score_view.go_to_start)
                 else:
                     QMessageBox.critical(self, "Error", "Failed to load song.")
             else:
@@ -1287,12 +1291,14 @@ class MainWindow(QMainWindow):
     def update_playback_time(self, time_sec):
         # Update progress bar and score
         self.progress_bar.set_time(time_sec)
-        self.score_view.set_playback_time(time_sec)
+        # self.score_view.set_playback_time(time_sec)
+        self.score_view.move_cursor(time_sec * 100) # Dummy conversion for now
     
     def seek_to_time(self, time_sec):
         """Seek to specific time in song"""
         # Reset staff triggers when seeking
-        self.score_view.reset_triggers()
+        # self.score_view.reset_triggers()
+        self.score_view.move_cursor(time_sec * 100) # Dummy conversion for now
         
         if hasattr(self.midi_engine, 'seek'):
             self.midi_engine.seek(time_sec)
@@ -1370,6 +1376,17 @@ class MainWindow(QMainWindow):
         """Called when the MIDI file stops a note"""
         self._deactivate_piano_key(note, stop_audio=False)
     
+    def on_mode_staff_note_on(self, pitch):
+        """Called when a training mode wants to highlight a note on the staff"""
+        if hasattr(self.score_view, 'highlight_note_by_pitch'):
+            # Highlight in green to indicate "play this"
+            self.score_view.highlight_note_by_pitch(pitch, "green")
+            
+    def on_mode_staff_note_off(self, pitch):
+        """Called when a training mode wants to unhighlight a note on the staff"""
+        if hasattr(self.score_view, 'unhighlight_note_by_pitch'):
+            self.score_view.unhighlight_note_by_pitch(pitch)
+
     def on_arduino_note_on(self, note, velocity):
         """Called when Arduino detects a note press"""
         self._activate_piano_key(note, velocity, QColor(255, 140, 0), play_audio=False)
@@ -1427,21 +1444,22 @@ class MainWindow(QMainWindow):
         self.piano_widget.clear_finger_assignments()
         
         # Get unique pitches and their assigned fingers from the staff
-        pitch_to_finger = {}
-        for note in self.score_view.notes:
-            pitch = note['pitch']
-            note_id = note['id']
-            finger = self.score_view.get_finger_for_note(note_id)
+        # pitch_to_finger = {}
+        # for note in self.score_view.notes:
+        #     pitch = note['pitch']
+        #     note_id = note['id']
+        #     finger = self.score_view.get_finger_for_note(note_id)
             
-            # Use the first finger assignment we see for each pitch
-            if pitch not in pitch_to_finger:
-                pitch_to_finger[pitch] = finger
+        #     # Use the first finger assignment we see for each pitch
+        #     if pitch not in pitch_to_finger:
+        #         pitch_to_finger[pitch] = finger
         
-        # Apply to piano widget
-        for pitch, finger in pitch_to_finger.items():
-            self.piano_widget.set_finger_assignment(pitch, finger)
+        # # Apply to piano widget
+        # for pitch, finger in pitch_to_finger.items():
+        #     self.piano_widget.set_finger_assignment(pitch, finger)
         
-        print(f"MainWindow: Synced {len(pitch_to_finger)} finger assignments to piano")
+        # print(f"MainWindow: Synced {len(pitch_to_finger)} finger assignments to piano")
+        pass
     
     def show_practice_results(self, evaluation):
         """Show practice results dialog with star rating"""
@@ -1516,7 +1534,7 @@ class MainWindow(QMainWindow):
         # Turn off all piano keys (88 keys from MIDI 21 to 108)
         for note in range(21, 109):
             self.piano_widget.note_off(note)
-            self.score_view.note_off(note)
+            # self.score_view.note_off(note)
             
             # Stop audio for each note
             def stop_async(pitch):
@@ -1538,7 +1556,7 @@ class MainWindow(QMainWindow):
         
         # Force UI update
         self.piano_widget.update()
-        self.score_view.update()
+        # self.score_view.update()
     
     def _cleanup_orphaned_keys(self):
         """Remove stuck keys that shouldn't be active (runs every 100ms)"""
