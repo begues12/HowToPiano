@@ -812,7 +812,7 @@ class MainWindow(QMainWindow):
             ("📝  Práctica", "Ilumina teclas, presiónalas para avanzar\nEntrena con retroalimentación", 
              "#e67e22", "#f39c12", "#d68910", "#f39c12", "#f8b739", "#ca6f1e", "Practice"),
             ("✏️  Corrector", "Corrige errores anteriores\nMejora tus puntos débiles", 
-             "#c0392b", "#e74c3c", "#
+             "#c0392b", "#e74c3c", "#a93226", "#e74c3c", "#ec7063", "#922b21", "Corrector")
         ]
         
         for icon_title, description, color1, color2, color3, hover1, hover2, pressed, mode_name in modes:
