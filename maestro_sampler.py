@@ -10,7 +10,7 @@ import threading
 class MaestroSampler:
     """Reproductor de samples de piano real con 5 capas de velocidad"""
     
-    def __init__(self, samples_dir="piano_samples"):
+    def __init__(self, samples_dir="assets/piano_samples"):
         self.samples_dir = Path(samples_dir)
         self.samples = {}  # {nota_midi: {velocity_layer: Sound}}
         self.active_sounds = {}  # {nota_midi: Sound actualmente sonando}

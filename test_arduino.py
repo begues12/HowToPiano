@@ -14,6 +14,7 @@ import time
 import json
 
 
+
 class ArduinoTester(QWidget):
     """Widget para probar la conexión y comunicación con Arduino"""
     
