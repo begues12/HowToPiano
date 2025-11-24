@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt6.QtCore import Qt, QThread, QSize, pyqtSignal, QObject, QTimer
 
 from src.core.arduino_conn import ArduinoWorker
+from src.core.midi_input import MidiInputWorker
 from src.core.synth import PianoSynth
 from src.core.midi_engine import MidiEngine
 from src.ui.score_view import SongLibrary
@@ -158,6 +159,27 @@ class MainWindow(QMainWindow):
         self.piano_widget.note_released.connect(self.send_arduino_led_off)
         
         self.arduino_thread.start()
+        
+        # MIDI Input (Auto-detect and run in separate thread)
+        self.midi_input = MidiInputWorker()  # Auto-detect device
+        self.midi_input_thread = QThread()
+        self.midi_input.moveToThread(self.midi_input_thread)
+        self.midi_input_thread.started.connect(self.midi_input.run)
+        
+        # Connect MIDI Input -> MidiEngine
+        self.midi_input.note_on.connect(self.midi_engine.on_user_note_on)
+        self.midi_input.note_off.connect(self.midi_engine.on_user_note_off)
+        
+        # Connect MIDI Input -> PianoWidget (Visual Feedback)
+        self.midi_input.note_on.connect(self.on_midi_note_on)
+        self.midi_input.note_off.connect(self.on_midi_note_off)
+        
+        # Connect MIDI Input -> Status updates
+        self.midi_input.connected.connect(self.on_midi_connected)
+        self.midi_input.disconnected.connect(self.on_midi_disconnected)
+        self.midi_input.error.connect(self.on_midi_error)
+        
+        self.midi_input_thread.start()
 
         # Control Buttons - SVG Icons
         from PyQt6.QtSvg import QSvgRenderer
@@ -908,10 +930,10 @@ class MainWindow(QMainWindow):
         device_text = item.text()
         
         if "Mock Mode" in device_text:
-            # Switch to mock mode
+            # Switch to mock mode - stop current MIDI input
+            self.stop_midi_input()
             self.midi_connected = False
             self.midi_device_name = "Mock Mode"
-            self.midi_port = None
             print("✅ Switched to Mock Mode")
             self.update_midi_indicator()
         else:
@@ -919,18 +941,50 @@ class MainWindow(QMainWindow):
             device_name = device_text.replace("🎹 ", "")
             
             try:
-                # TODO: Connect to actual MIDI device using mido
-                # For now, just update the indicator
-                self.midi_connected = True
-                self.midi_device_name = device_name
-                print(f"✅ Selected MIDI device: {device_name}")
-                self.update_midi_indicator()
+                # Stop current MIDI input
+                self.stop_midi_input()
+                
+                # Start new MIDI input with selected device
+                self.start_midi_input(device_name)
+                
+                print(f"✅ Switching to MIDI device: {device_name}")
             except Exception as e:
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.critical(dialog, "Error", f"Failed to connect to MIDI device:\n{e}")
                 return
         
         dialog.accept()
+    
+    def start_midi_input(self, device_name=None):
+        """Start MIDI input worker with specified device (or auto-detect)"""
+        # Stop existing worker if any
+        self.stop_midi_input()
+        
+        # Create new worker with specified device
+        self.midi_input = MidiInputWorker(device_name)
+        self.midi_input_thread = QThread()
+        self.midi_input.moveToThread(self.midi_input_thread)
+        self.midi_input_thread.started.connect(self.midi_input.run)
+        
+        # Connect signals
+        self.midi_input.note_on.connect(self.midi_engine.on_user_note_on)
+        self.midi_input.note_off.connect(self.midi_engine.on_user_note_off)
+        self.midi_input.note_on.connect(self.on_midi_note_on)
+        self.midi_input.note_off.connect(self.on_midi_note_off)
+        self.midi_input.connected.connect(self.on_midi_connected)
+        self.midi_input.disconnected.connect(self.on_midi_disconnected)
+        self.midi_input.error.connect(self.on_midi_error)
+        
+        # Start thread
+        self.midi_input_thread.start()
+    
+    def stop_midi_input(self):
+        """Stop MIDI input worker safely"""
+        if hasattr(self, 'midi_input') and self.midi_input:
+            self.midi_input.stop()
+            if hasattr(self, 'midi_input_thread') and self.midi_input_thread.isRunning():
+                self.midi_input_thread.quit()
+                self.midi_input_thread.wait(1000)  # Wait up to 1 second
     
     def update_midi_indicator(self):
         """Update MIDI connection indicator button"""
@@ -1250,6 +1304,36 @@ class MainWindow(QMainWindow):
     def on_arduino_note_off(self, note):
         """Called when Arduino detects a note release"""
         self._deactivate_piano_key(note, stop_audio=False)
+    
+    def on_midi_note_on(self, note, velocity):
+        """Called when MIDI keyboard detects a note press (thread-safe)"""
+        # Visual feedback with cyan color for MIDI input
+        self._activate_piano_key(note, velocity, QColor(0, 255, 255), play_audio=False)
+    
+    def on_midi_note_off(self, note):
+        """Called when MIDI keyboard detects a note release (thread-safe)"""
+        self._deactivate_piano_key(note, stop_audio=False)
+    
+    def on_midi_connected(self, device_name):
+        """Called when MIDI device connects successfully"""
+        print(f"✅ MIDI Device Connected: {device_name}")
+        self.midi_connected = True
+        self.midi_device_name = device_name
+        self.update_midi_indicator()
+        self.status_label.setText(f"MIDI Connected: {device_name}")
+    
+    def on_midi_disconnected(self):
+        """Called when MIDI device disconnects"""
+        print("🔌 MIDI Device Disconnected")
+        self.midi_connected = False
+        self.midi_device_name = "Mock Mode"
+        self.update_midi_indicator()
+        self.status_label.setText("MIDI Disconnected")
+    
+    def on_midi_error(self, error_msg):
+        """Called when MIDI error occurs"""
+        print(f"❌ MIDI Error: {error_msg}")
+        self.status_label.setText(f"MIDI Error: {error_msg}")
     
     def on_user_note_pressed(self, note, velocity):
         """Called when user clicks piano key"""
@@ -1648,7 +1732,12 @@ class MainWindow(QMainWindow):
                 self.synth.all_notes_off()
                 self.synth.cleanup()
             
-            # 3. Stop Arduino thread
+            # 3. Stop MIDI input thread
+            if hasattr(self, 'midi_input') and self.midi_input:
+                print("  - Deteniendo MIDI input...")
+                self.stop_midi_input()
+            
+            # 4. Stop Arduino thread
             if hasattr(self, 'arduino') and self.arduino:
                 print("  - Deteniendo Arduino...")
                 self.arduino.stop()
@@ -1657,7 +1746,7 @@ class MainWindow(QMainWindow):
                 self.arduino_thread.quit()
                 self.arduino_thread.wait(1000)  # Wait max 1 second
             
-            # 4. Save settings
+            # 5. Save settings
             self.save_settings()
             print("✅ Aplicación cerrada correctamente")
             

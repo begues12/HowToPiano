@@ -7,6 +7,7 @@ A Python application that acts as a piano teacher, connecting to an Arduino via 
 - **Automatic Timing Synchronization**: AI-powered system that measures and adjusts audio-visual sync in real-time.
 - **Widget-Based Notes**: 6 musical figure types (whole, half, quarter, eighth, sixteenth, thirtysecond) with precise rendering.
 - **Grand Piano Synthesis**: Professional piano sound with 12 harmonics, inharmonicity modeling, and multi-string chorus.
+- **MIDI Keyboard Support**: Automatic detection and threaded input handling for external MIDI keyboards (DMK25, etc).
 - **Arduino Connection**: Connects to your digital piano or Arduino interface via USB.
 - **Teaching Modes**:
     - **Master (Maestro)**: Displays the score and plays automatically - just watch and learn.
@@ -30,7 +31,11 @@ A Python application that acts as a piano teacher, connecting to an Arduino via 
    pip install -r requirements.txt
    ```
 2. **SoundFont**: Place a `.sf2` soundfont file in `assets/soundfonts/default.sf2`. You can download free SoundFonts like "FluidR3_GM" online.
-3. **Arduino**: Connect your Arduino. The default port is `COM3`. You can change this in the code or I can add a settings menu.
+3. **MIDI Keyboard** (Optional): Connect any MIDI keyboard via USB. The application will auto-detect it on startup.
+   - Threaded input processing ensures zero lag
+   - Supports all standard MIDI devices
+   - Visual feedback with cyan color for MIDI input
+4. **Arduino** (Optional): Connect your Arduino. The default port is `COM3`. You can change this in the code or I can add a settings menu.
    - Protocol: The Arduino should send `ON:note:velocity` and `OFF:note` strings over Serial at 9600 baud.
 
 ## Running
