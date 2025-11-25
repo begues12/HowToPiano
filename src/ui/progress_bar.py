@@ -35,12 +35,21 @@ class ProgressBar(QWidget):
             self.seek_requested.emit(time)
     
     def mouseMoveEvent(self, event: QMouseEvent):
-        """Show time tooltip on hover"""
+        """Show time tooltip on hover and handle drag to seek"""
+        width = self.width()
+        x = event.position().x()
+        
         if self.total_duration > 0:
-            x = event.position().x()
-            width = self.width()
+            # Update hover time
             self.hover_time = (x / width) * self.total_duration
             self.update()
+            
+            # Handle drag to seek
+            if event.buttons() & Qt.MouseButton.LeftButton:
+                time = (x / width) * self.total_duration
+                # Clamp time
+                time = max(0.0, min(time, self.total_duration))
+                self.seek_requested.emit(time)
     
     def leaveEvent(self, event):
         """Clear hover tooltip"""

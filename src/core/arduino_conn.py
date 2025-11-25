@@ -59,6 +59,24 @@ class ArduinoWorker(QObject):
         except ValueError:
             pass
 
+    def send_note_on(self, note, velocity):
+        """Send Note On command to Arduino"""
+        if self.serial and self.serial.is_open:
+            try:
+                cmd = f"ON:{note}:{velocity}\n"
+                self.serial.write(cmd.encode())
+            except Exception as e:
+                print(f"Arduino send error: {e}")
+
+    def send_note_off(self, note):
+        """Send Note Off command to Arduino"""
+        if self.serial and self.serial.is_open:
+            try:
+                cmd = f"OFF:{note}\n"
+                self.serial.write(cmd.encode())
+            except Exception as e:
+                print(f"Arduino send error: {e}")
+
     def stop(self):
         self.running = False
         if self.serial:

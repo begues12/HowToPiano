@@ -1,10 +1,15 @@
 import os
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage
 from PyQt6.QtCore import QUrl, pyqtSlot, QObject, pyqtSignal
 from PyQt6.QtWebChannel import QWebChannel
 import json
 import mido
+
+class ConsoleWebPage(QWebEnginePage):
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        print(f"js: {message}")
 
 class WebScoreWidget(QWidget):
     """
@@ -22,6 +27,7 @@ class WebScoreWidget(QWidget):
         self.layout.setContentsMargins(0, 0, 0, 0)
         
         self.webview = QWebEngineView()
+        self.webview.setPage(ConsoleWebPage(self.webview))
         self.layout.addWidget(self.webview)
         
         # Cargar el archivo HTML local
@@ -54,7 +60,7 @@ class WebScoreWidget(QWidget):
         
         print("WebScoreWidget initialized with VexFlow")
 
-    def load_notes(self, notes_data):
+    def load_notes(self, notes_data, tempo=120):
         """
         Envía las notas a VexFlow para renderizar.
         notes_data: Lista de diccionarios con formato VexFlow
@@ -62,7 +68,7 @@ class WebScoreWidget(QWidget):
         """
         # Convertir a JSON
         json_data = json.dumps(notes_data)
-        js_command = f"renderNotes({json_data});"
+        js_command = f"renderNotes({json_data}, {tempo});"
         self.webview.page().runJavaScript(js_command)
 
     def highlight_note(self, index, color="red"):
@@ -151,13 +157,10 @@ class WebScoreWidget(QWidget):
         self.last_time = -10.0
         
         try:
+            # 1. Parse for Visuals (Ticks)
             mid = mido.MidiFile(file_path)
             ticks_per_beat = mid.ticks_per_beat
             
-            vexflow_notes = []
-            self.notes = [] # For compatibility
-            
-            # Better approach: Use absolute time
             events = []
             for track in mid.tracks:
                 current_time = 0
@@ -170,7 +173,6 @@ class WebScoreWidget(QWidget):
             
             events.sort(key=lambda x: x['time'])
             
-            # Pair note_on and note_off
             active_notes = {}
             final_notes = []
             
@@ -190,46 +192,106 @@ class WebScoreWidget(QWidget):
                         })
                         del active_notes[event['note']]
             
-            # Sort by start time
-            final_notes.sort(key=lambda x: x['start_ticks'])
+            # Sort by start time AND pitch for deterministic order
+            final_notes.sort(key=lambda x: (x['start_ticks'], x['pitch']))
             
-            # Convert to VexFlow
-            for note in final_notes:
+            # 2. Parse for Timing (Seconds) - Replicating MidiEngine logic
+            mid_timing = mido.MidiFile(file_path) # Re-open to iterate
+            timing_events = []
+            current_time = 0
+            
+            # Extract initial tempo
+            initial_bpm = 120
+            tempo_found = False
+            
+            for msg in mid_timing:
+                current_time += msg.time
+                if msg.type == 'set_tempo' and not tempo_found:
+                    initial_bpm = mido.tempo2bpm(msg.tempo)
+                    tempo_found = True
+                if msg.type in ['note_on', 'note_off']:
+                    timing_events.append({'time': current_time, 'msg': msg})
+            
+            # Remove silence
+            first_note_time = 0
+            for event in timing_events:
+                if event['msg'].type == 'note_on' and event['msg'].velocity > 0:
+                    first_note_time = event['time']
+                    break
+            
+            if first_note_time > 0:
+                for event in timing_events:
+                    event['time'] -= first_note_time
+            
+            # Build timing notes
+            timing_notes = []
+            active_timing_notes = {}
+            for event in timing_events:
+                msg = event['msg']
+                time = event['time']
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    if msg.note not in active_timing_notes:
+                         active_timing_notes[msg.note] = time
+                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                    if msg.note in active_timing_notes:
+                        start = active_timing_notes[msg.note]
+                        duration = time - start
+                        timing_notes.append({
+                            'pitch': msg.note,
+                            'start_time': start,
+                            'duration': duration
+                        })
+                        del active_timing_notes[msg.note]
+            
+            timing_notes.sort(key=lambda x: (x['start_time'], x['pitch']))
+            
+            # 3. Merge
+            vexflow_notes = []
+            self.notes = []
+            
+            use_timing_notes = len(final_notes) == len(timing_notes)
+            if not use_timing_notes:
+                print(f"Warning: Note count mismatch! Visual: {len(final_notes)}, Timing: {len(timing_notes)}. Using approximate timing.")
+            
+            for i, note in enumerate(final_notes):
                 key = self.midi_pitch_to_vexflow(note['pitch'])
                 duration = self.duration_to_vexflow(note['duration_beats'])
-                color = self.get_note_color(note['pitch'])
                 
-                # Calculate time in seconds (approximate for cursor sync)
-                # Use current tempo if available, otherwise default to 120
-                bpm = self.tempo_bpm if self.tempo_bpm > 0 else 120
-                seconds_per_beat = 60.0 / bpm
-                start_time_sec = (note['start_ticks'] / ticks_per_beat) * seconds_per_beat
+                if use_timing_notes:
+                    start_time_sec = timing_notes[i]['start_time']
+                    duration_sec = timing_notes[i]['duration']
+                else:
+                    # Fallback
+                    bpm = self.tempo_bpm if self.tempo_bpm > 0 else 120
+                    seconds_per_beat = 60.0 / bpm
+                    start_time_sec = (note['start_ticks'] / ticks_per_beat) * seconds_per_beat
+                    duration_sec = note['duration_beats'] * seconds_per_beat
                 
                 vexflow_notes.append({
                     'keys': [key],
                     'duration': duration,
-                    'color': color,
+                    'color': 'black', # Start black, highlight when played
                     'pitch': note['pitch'],
-                    'start_time': start_time_sec
+                    'start_time': start_time_sec,
+                    'duration_sec': duration_sec,
+                    'id': i
                 })
-                
-                duration_sec = note['duration_beats'] * seconds_per_beat
                 
                 self.notes.append({
                     'pitch': note['pitch'],
-                    'id': len(self.notes),
+                    'id': i,
                     'start_time': start_time_sec,
                     'duration': duration_sec,
-                    'x': 0, # Dummy
-                    'y': 0  # Dummy
+                    'x': 0,
+                    'y': 0
                 })
             
             # Limit for performance if too many notes
-            if len(vexflow_notes) > 500:
-                print("Truncating notes for VexFlow performance")
-                vexflow_notes = vexflow_notes[:500]
+            # if len(vexflow_notes) > 500:
+            #     print("Truncating notes for VexFlow performance")
+            #     vexflow_notes = vexflow_notes[:500]
                 
-            self.load_notes(vexflow_notes)
+            self.load_notes(vexflow_notes, initial_bpm)
             return True
             
         except Exception as e:
@@ -242,10 +304,12 @@ class WebScoreWidget(QWidget):
         self.tempo_bpm = bpm
 
     def play(self):
-        pass
+        """Start JS playback loop"""
+        self.webview.page().runJavaScript("play();")
 
     def stop(self):
-        pass
+        """Stop JS playback loop"""
+        self.webview.page().runJavaScript("pause();")
         
     def note_on(self, pitch):
         pass
@@ -306,6 +370,7 @@ class WebScoreWidget(QWidget):
             # We use a window [start, start + tolerance] to trigger
             if start <= current_time <= start + tolerance:
                 if note_id not in self.triggered_notes:
+                    print(f"[WebScoreWidget] Note triggered: pitch={pitch} at time={current_time:.2f}")
                     self.note_triggered.emit(pitch, 80) # Velocity 80
                     self.triggered_notes.add(note_id)
                     self.currently_playing_notes.add(note_id)
@@ -335,3 +400,15 @@ class WebScoreWidget(QWidget):
         
     def get_finger_for_note(self, note_id):
         return 1 # Dummy
+
+    def reset_score(self):
+        """Resets the score state (colors and scroll)"""
+        self.webview.page().runJavaScript("resetNotes();")
+
+    def set_active_color(self, color):
+        """Sets the color for active notes"""
+        self.webview.page().runJavaScript(f"setActiveNoteColor('{color}');")
+        
+    def set_view_mode(self, mode):
+        """Sets the view mode: 'scrolling' or 'paging'"""
+        self.webview.page().runJavaScript(f"setViewMode('{mode}');")

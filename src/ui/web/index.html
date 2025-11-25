@@ -7,35 +7,46 @@
             margin: 0;
             padding: 0;
             background-color: #ffffff;
-            overflow-x: auto;
-            overflow-y: hidden;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
         }
         #canvas-container {
-            display: block; /* Changed from flex to block to avoid centering clipping */
-            /* justify-content: flex-start; */
-            padding-top: 50px;
-            padding-left: 20px; /* Add some padding on the left */
-            min-width: fit-content; /* Ensure container grows with content */
-   
+            width: 100%;
+            height: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            /* Hide scrollbar for IE, Edge and Firefox */
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+        /* Hide scrollbar for Chrome, Safari and Opera */
+        #canvas-container::-webkit-scrollbar {
+            display: none;
+        }
+        #score-wrapper {
+            position: relative;
+            top: 50%;
+            transform: translateY(-50%);
+            padding-left: 20px;
+            display: inline-block;
+        }
+        #output {
+            /* position: relative; */
         }
         .cursor {
-            position: absolute;
-            top: 50px;
-            width: 2px;
-            height: 200px;
-            background-color: rgba(255, 0, 0, 0.7);
-            pointer-events: none;
-            z-index: 100;
-            display: none;
+            display: none !important;
         }
     </style>
     <!-- Load VexFlow from local file -->
     <script src="vexflow.js"></script>
 </head>
 <body>
-    <div id="cursor" class="cursor"></div>
     <div id="canvas-container">
-        <div id="output"></div>
+        <div id="score-wrapper">
+            <div id="output"></div>
+            <div id="cursor" class="cursor"></div>
+        </div>
     </div>
 
     <script>
@@ -47,12 +58,14 @@
                 return;
             }
 
-            const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, StaveConnector } = Vex.Flow;
+            const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, StaveConnector, BarNote, GhostNote } = Vex.Flow;
 
             let renderer, context;
             let currentNotes = [];
+            let indexToNoteMap = {}; // Map original index to {note, keyIndex}
             let staveTreble, staveBass;
             let noteDataMap = []; // Stores metadata like start_time for each note
+            let activeNoteIndices = []; // Track currently highlighted notes (cursor replacement)
             
             // Initialize VexFlow
             function initVexFlow() {
@@ -101,20 +114,89 @@
 
             // Function called from Python to render notes
             // notesData: Array of {keys: ["c/4"], duration: "q", color: "black", pitch: 60, start_time: 0.0}
-            window.renderNotes = function(notesData) {
+            window.renderNotes = function(notesData, tempo) {
                 initVexFlow();
-                noteDataMap = notesData; // Store for cursor mapping
+                noteDataMap = notesData.map(n => ({...n, baseColor: n.color || 'black'})); 
+                indexToNoteMap = {};
+                activeNoteIndices = [];
+                console.log("Rendering notes with tempo:", tempo);
                 
-                // Calculate required width based on number of notes
-                const width = Math.max(1000, notesData.length * 60);
+                // Group notes by start_time to form chords
+                const groups = {};
+                noteDataMap.forEach((n, i) => {
+                    const time = n.start_time.toFixed(3); // Round to avoid float errors
+                    if (!groups[time]) groups[time] = [];
+                    groups[time].push({ ...n, originalIndex: i });
+                });
+                
+                // Sort groups by time
+                const sortedTimes = Object.keys(groups).sort((a, b) => parseFloat(a) - parseFloat(b));
+                
+                const notes = [];
+                const bassNotes = [];
+                let currentBeats = 0;
+                
+                sortedTimes.forEach(time => {
+                    const group = groups[time];
+                    
+                    // Sort group by pitch to ensure keys are sorted for VexFlow
+                    group.sort((a, b) => a.pitch - b.pitch);
+
+                    // Use properties of the first note in group
+                    const first = group[0];
+                    const keys = group.map(n => n.keys[0]); // Flatten keys
+                    
+                    if (keys.length === 0) return;
+
+                    const note = new StaveNote({ 
+                        keys: keys, 
+                        duration: first.duration,
+                        auto_stem: true,
+                        clef: "treble"
+                    });
+                    
+                    // Map original indices to this note
+                    group.forEach((n, keyIdx) => {
+                        indexToNoteMap[n.originalIndex] = { note: note, keyIndex: keyIdx };
+                        
+                        if (n.color) {
+                            note.setKeyStyle(keyIdx, {fillStyle: n.color, strokeStyle: n.color});
+                        }
+                    });
+                    
+                    notes.push(note);
+                    
+                    // Add matching GhostNote to bass to keep alignment
+                    bassNotes.push(new GhostNote({ keys: ["c/3"], duration: first.duration }));
+                    
+                    // Calculate beats
+                    const durationMap = {
+                        "w": 4, "h": 2, "q": 1, "8": 0.5, "16": 0.25, "32": 0.125,
+                        "wr": 4, "hr": 2, "qr": 1, "8r": 0.5, "16r": 0.25, "32r": 0.125
+                    };
+                    let beats = durationMap[first.duration] || 1;
+                    if (first.duration.includes("d")) beats *= 1.5;
+                    
+                    currentBeats += beats;
+                    
+                    // Add Bar Line if we crossed a measure boundary (4 beats)
+                    while (currentBeats >= 4) {
+                        notes.push(new BarNote());
+                        bassNotes.push(new BarNote());
+                        currentBeats -= 4;
+                    }
+                });
+
+                // Calculate required width
+                const width = Math.max(1000, notes.length * 50); 
                 renderer.resize(width + 50, 500);
                 
                 // Create Grand Staff
-                staveTreble = new Stave(20, 40, width); // Increased x to 20
+                staveTreble = new Stave(20, 40, width);
                 staveTreble.addClef("treble").addTimeSignature("4/4");
                 staveTreble.setContext(context).draw();
                 
-                staveBass = new Stave(20, 160, width); // Increased x to 20
+                staveBass = new Stave(20, 160, width);
                 staveBass.addClef("bass").addTimeSignature("4/4");
                 staveBass.setContext(context).draw();
                 
@@ -122,64 +204,64 @@
                 new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_LEFT).setContext(context).draw();
                 new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_RIGHT).setContext(context).draw();
 
-                // Split notes into Treble and Bass
-                const trebleNotes = [];
-                const bassNotes = [];
-                
-                // We need to group notes by time to form chords, but for now let's keep it simple
-                // VexFlow needs synchronized voices. This is complex for arbitrary MIDI.
-                // Simplified approach: Put everything in Treble for now, or try to split intelligently.
-                // Splitting voices requires matching durations.
-                
-                // Let's stick to single staff for now but make it look better, OR
-                // render everything on Treble but with ledger lines (VexFlow handles this).
-                // To do Grand Staff properly, we need to process the MIDI into two separate tracks/voices in Python.
-                
-                // For this iteration, let's render on Treble but allow ledger lines to go down to Bass area visually
-                // But wait, user asked for "decorar más". Grand Staff is a big decoration.
-                
-                // Let's try a simple split: if average pitch < 60, go to bass? No, that breaks synchronization.
-                // We will render everything on the Treble stave for now to ensure rhythm is correct,
-                // but we will draw the Bass stave empty for "decoration".
-                
-                const notes = notesData.map(n => {
-                    const note = new StaveNote({ 
-                        keys: n.keys, 
-                        duration: n.duration,
-                        auto_stem: true,
-                        clef: "treble"
-                    });
-                    
-                    if (n.color) {
-                        note.setStyle({fillStyle: n.color, strokeStyle: n.color});
-                    }
-                    
-                    // Store ID for later reference if needed
-                    note.id = n.id;
-                    return note;
-                });
-
                 // Create beams automatically
-                const beams = Beam.generateBeams(notes);
+                const staveNotesOnly = notes.filter(n => n instanceof StaveNote);
+                const beams = Beam.generateBeams(staveNotesOnly);
 
-                const voice = new Voice({num_beats: notesData.length, beat_value: 4}); // Simplified beat counting
-                voice.setStrict(false); // Allow arbitrary number of notes
+                const voice = new Voice({num_beats: notes.length, beat_value: 4}); 
+                voice.setStrict(false); 
                 voice.addTickables(notes);
 
-                new Formatter().joinVoices([voice]).format([voice], width - 50);
+                const bassVoice = new Voice({num_beats: bassNotes.length, beat_value: 4});
+                bassVoice.setStrict(false);
+                bassVoice.addTickables(bassNotes);
+
+                new Formatter().joinVoices([voice, bassVoice]).format([voice, bassVoice], width - 50);
 
                 voice.draw(context, staveTreble);
+                bassVoice.draw(context, staveBass);
                 beams.forEach(b => b.setContext(context).draw());
                 
                 currentNotes = notes;
             }
 
-            // Highlight a specific note by index
+            // Highlight a specific note by index (called from Python for feedback)
             window.highlightNote = function(index, color) {
-                if (index >= 0 && index < currentNotes.length) {
-                    const note = currentNotes[index];
+                if (noteDataMap[index]) {
+                    noteDataMap[index].baseColor = color; // Update base color state
+                    
+                    // If the note is currently in 'future' state, apply the color immediately.
+                    // If it's 'active' or 'past', the loop will handle it (or we might want to override).
+                    // Usually feedback comes when note is active or just finished.
+                    // If we hit a note correctly, it might be 'active' or 'past'.
+                    // Let's force update if it's not 'active' (orange).
+                    
+                    const currentState = noteDataMap[index].currentState;
+                    if (currentState !== 'active') {
+                         _applyColorToNote(index, color);
+                    }
+                }
+            }
+            
+            function _applyColorToNote(index, color) {
+                if (indexToNoteMap[index]) {
+                    const { note, keyIndex } = indexToNoteMap[index];
+                    // note.setKeyStyle(keyIndex, {fillStyle: color, strokeStyle: color});
+                    // VexFlow setKeyStyle might not update after draw?
+                    // Let's try direct DOM manipulation which is faster/reliable for already drawn notes
+                    
                     const group = note.getAttribute("el"); 
                     if(group) {
+                        // This is tricky for chords. VexFlow groups all noteheads.
+                        // We need to find the specific notehead for this keyIndex.
+                        // But for now, let's just color the whole chord if it's a chord?
+                        // Or try to be specific.
+                        
+                        // Simplified: Color all paths in the group. 
+                        // This colors the whole chord. 
+                        // If we want individual note coloring, we need to inspect VexFlow internals more.
+                        // Given the user request, highlighting the "note to play" (chord) is fine.
+                        
                         const paths = group.querySelectorAll("path");
                         paths.forEach(p => {
                             p.setAttribute("fill", color);
@@ -189,54 +271,219 @@
                 }
             }
 
-            // Move cursor to x position
-            window.moveCursor = function(x) {
-                const cursor = document.getElementById("cursor");
-                cursor.style.display = "block";
-                cursor.style.left = (x + 10) + "px"; // Offset for stave padding
-                cursor.style.height = "220px"; // Cover both staves
+            // Internal function to move cursor (Deprecated/Hidden)
+            function _moveCursor(x) {
+                // Cursor is hidden via CSS
+            }
+
+            // Exposed for compatibility, but prefer updateCursor
+            window.moveCursor = _moveCursor;
+            
+            // Animation Loop State
+            let isPlaying = false;
+            let lastServerTime = 0;
+            let lastServerTimestamp = 0;
+            let animationFrameId;
+            let currentZoom = 1.0;
+            let viewMode = 'paging'; // 'scrolling' or 'paging'
+
+            window.setViewMode = function(mode) {
+                viewMode = mode;
+                console.log("View mode set to:", mode);
+            }
+
+            window.play = function() {
+                isPlaying = true;
+                lastServerTimestamp = performance.now();
+                cancelAnimationFrame(animationFrameId);
+                loop();
+            }
+
+            window.pause = function() {
+                isPlaying = false;
+                cancelAnimationFrame(animationFrameId);
+            }
+
+            function updateScroll(cursorX) {
+                const container = document.getElementById("canvas-container");
+                
+                if (viewMode === 'paging') {
+                    // Page View: Flip pages
+                    const pageWidth = container.clientWidth;
+                    const pageIndex = Math.floor((cursorX * currentZoom) / pageWidth);
+                    const targetScroll = pageIndex * pageWidth;
+                    
+                    // Only scroll if we need to change page
+                    if (Math.abs(container.scrollLeft - targetScroll) > 5) {
+                        container.scrollLeft = targetScroll;
+                    }
+                } else {
+                    // Scrolling View: Continuous smooth scroll
+                    const halfWidth = container.clientWidth / 2;
+                    const targetScroll = (cursorX * currentZoom) - halfWidth;
+                    
+                    if (targetScroll >= 0) {
+                        container.scrollLeft = targetScroll;
+                    } else {
+                        container.scrollLeft = 0;
+                    }
+                }
+            }
+
+            function loop() {
+                if (!isPlaying) return;
+                
+                const now = performance.now();
+                const deltaTime = (now - lastServerTimestamp) / 1000; // seconds
+                const estimatedTime = lastServerTime + deltaTime;
+                
+                highlightActiveNotes(estimatedTime);
+                
+                // Update scroll based on time
+                const cursorX = calculateXForTime(estimatedTime);
+                updateScroll(cursorX);
+                
+                animationFrameId = requestAnimationFrame(loop);
+            }
+
+            // Update cursor based on time (called from Python)
+            window.updateCursor = function(time) {
+                lastServerTime = time;
+                lastServerTimestamp = performance.now();
+                
+                // If not playing, render immediately (scrubbing)
+                if (!isPlaying) {
+                    highlightActiveNotes(time);
+                    
+                    // Also update scroll position when scrubbing
+                    const cursorX = calculateXForTime(time);
+                    updateScroll(cursorX);
+                }
             }
             
-            // Update cursor based on time
-            window.updateCursor = function(time) {
-                // Find the note that is active at this time
-                // noteDataMap has start_time.
-                // We want the note where start_time <= time
+            function highlightActiveNotes(time) {
+                let activeIndices = [];
                 
-                let targetNoteIndex = -1;
+                // Iterate all notes to update state
+                // Optimization: We could limit range, but for < 500 notes, full iteration is okay-ish.
+                // To optimize: keep track of last processed index?
+                
+                for(let i = 0; i < noteDataMap.length; i++) {
+                    const noteData = noteDataMap[i];
+                    const start = noteData.start_time;
+                    const end = start + (noteData.duration_sec || 0.5); // Fallback if missing
+                    
+                    let newState = 'future';
+                    if (time >= start && time < end) {
+                        newState = 'active';
+                        activeIndices.push(i);
+                    } else if (time >= end) {
+                        newState = 'past';
+                    }
+                    
+                    // Only update if state changed
+                    if (noteData.currentState !== newState) {
+                        noteData.currentState = newState;
+                        
+                        if (newState === 'active') {
+                            _applyColorToNote(i, activeNoteColor); // Configurable Color
+                        } else if (newState === 'past') {
+                            _applyColorToNote(i, "#bdc3c7"); // Light Gray
+                        } else {
+                            // Future -> Reset to base color (Black or Feedback Color)
+                            _applyColorToNote(i, noteData.baseColor);
+                        }
+                    }
+                }
+                
+                activeNoteIndices = activeIndices;
+                
+                // Scroll logic moved to loop() for smoothness
+                if (time < 0.1) {
+                    // Reset scroll at start
+                    document.getElementById("canvas-container").scrollLeft = 0;
+                }
+            }
+            
+            function calculateXForTime(time) {
+                // Find the note that is active at this time or the next one
+                let prevNoteIndex = -1;
+                let nextNoteIndex = -1;
+                
                 for(let i = 0; i < noteDataMap.length; i++) {
                     if (noteDataMap[i].start_time <= time) {
-                        targetNoteIndex = i;
+                        prevNoteIndex = i;
                     } else {
+                        nextNoteIndex = i;
                         break;
                     }
                 }
                 
-                if (targetNoteIndex >= 0 && targetNoteIndex < currentNotes.length) {
-                    const note = currentNotes[targetNoteIndex];
-                    // Get X position of the note
-                    // VexFlow StaveNote has getAbsoluteX()
-                    const x = note.getAbsoluteX();
-                    moveCursor(x);
+                let x = 10; // Default start
+                
+                if (prevNoteIndex >= 0 && nextNoteIndex >= 0) {
+                    // Interpolate between notes
+                    const prevNoteObj = indexToNoteMap[prevNoteIndex];
+                    const nextNoteObj = indexToNoteMap[nextNoteIndex];
                     
-                    // Auto-scroll if cursor goes off screen
-                    const container = document.body; // or window
-                    if (x > window.scrollX + window.innerWidth - 200) {
-                        window.scrollTo(x - 100, 0);
+                    if (prevNoteObj && nextNoteObj) {
+                        const prevNote = prevNoteObj.note;
+                        const nextNote = nextNoteObj.note;
+                        const prevTime = noteDataMap[prevNoteIndex].start_time;
+                        const nextTime = noteDataMap[nextNoteIndex].start_time;
+                        
+                        const prevX = prevNote.getAbsoluteX();
+                        const nextX = nextNote.getAbsoluteX();
+                        
+                        // Linear interpolation
+                        if (nextTime > prevTime) {
+                            const ratio = (time - prevTime) / (nextTime - prevTime);
+                            x = prevX + (nextX - prevX) * ratio;
+                        } else {
+                            x = prevX; // Same time (chord), stick to position
+                        }
                     }
-                } else if (time <= 0) {
-                    moveCursor(10); // Start
-                    window.scrollTo(0, 0);
+                    
+                } else if (prevNoteIndex >= 0) {
+                    // Past the last note
+                    const prevNoteObj = indexToNoteMap[prevNoteIndex];
+                    if (prevNoteObj) {
+                        const note = prevNoteObj.note;
+                        x = note.getAbsoluteX();
+                    }
+                } else if (nextNoteIndex >= 0) {
+                    // Before the first note
+                     const nextNoteObj = indexToNoteMap[nextNoteIndex];
+                     if (nextNoteObj) {
+                         const nextNote = nextNoteObj.note;
+                         const nextTime = noteDataMap[nextNoteIndex].start_time;
+                         const nextX = nextNote.getAbsoluteX();
+                         
+                         // Interpolate from 0 to first note
+                         if (nextTime > 0) {
+                             const ratio = time / nextTime;
+                             x = 10 + (nextX - 10) * ratio;
+                         }
+                     }
                 }
+                return x;
             }
             
-            // Set Zoom
-            window.setZoom = function(scale) {
-                const container = document.getElementById("canvas-container");
-                container.style.transform = `scale(${scale})`;
-                container.style.transformOrigin = "top left";
-                // Adjust body width to allow scrolling
-                // document.body.style.width = (container.offsetWidth * scale) + "px";
+            // Set Active Note Color
+            let activeNoteColor = "#e67e22"; // Default Orange
+            window.setActiveNoteColor = function(color) {
+                activeNoteColor = color;
+            }
+
+            // Reset all notes to black (or base color)
+            window.resetNotes = function() {
+                noteDataMap.forEach((n, i) => {
+                    n.baseColor = 'black'; // Reset base color
+                    n.currentState = 'future'; // Reset state
+                    _applyColorToNote(i, 'black');
+                });
+                activeNoteIndices = [];
+                document.getElementById("canvas-container").scrollLeft = 0;
             }
 
             // Initial render

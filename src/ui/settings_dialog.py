@@ -153,6 +153,23 @@ class SettingsDialog(QDialog):
         self.show_staff_note_colors.setChecked(settings.get("show_staff_note_colors", True) if settings else True)
         visual_layout.addWidget(self.show_staff_note_colors)
         
+        # View Mode (Scrolling vs Paging)
+        view_mode_layout = QHBoxLayout()
+        view_mode_label = QLabel("Score View Mode:")
+        self.view_mode_combo = QComboBox()
+        self.view_mode_combo.addItems(["Paging (Flip Pages)", "Scrolling (Continuous)"])
+        
+        current_mode = settings.get("view_mode", "paging") if settings else "paging"
+        if current_mode == "scrolling":
+            self.view_mode_combo.setCurrentIndex(1)
+        else:
+            self.view_mode_combo.setCurrentIndex(0)
+            
+        view_mode_layout.addWidget(view_mode_label)
+        view_mode_layout.addWidget(self.view_mode_combo)
+        view_mode_layout.addStretch()
+        visual_layout.addLayout(view_mode_layout)
+        
         # Played note color picker
         color_layout = QHBoxLayout()
         color_label = QLabel("Color for played notes:")
@@ -921,6 +938,7 @@ class SettingsDialog(QDialog):
             "show_finger_numbers": self.show_finger_numbers.isChecked(),
             "show_active_note_colors": self.show_active_note_colors.isChecked(),
             "show_staff_note_colors": self.show_staff_note_colors.isChecked(),
+            "view_mode": "scrolling" if self.view_mode_combo.currentIndex() == 1 else "paging",
             "played_note_color": [self.played_note_color.red(), self.played_note_color.green(), self.played_note_color.blue()],
             
             # Audio

@@ -97,6 +97,12 @@ class MainWindow(QMainWindow):
         self.score_view.setMinimumHeight(400)
         right_layout.addWidget(self.score_view, stretch=10)
         
+        # Initialize active note color after page load
+        QTimer.singleShot(1000, lambda: self.score_view.set_active_color(self.get_played_note_color().name()) if hasattr(self.score_view, 'set_active_color') else None)
+        
+        # Initialize view mode after page load
+        QTimer.singleShot(1000, lambda: self.score_view.set_view_mode(self.settings.get("view_mode", "paging")) if hasattr(self.score_view, 'set_view_mode') else None)
+        
         # Progress Bar (above piano)
         self.progress_bar = ProgressBar()
         self.progress_bar.seek_requested.connect(self.seek_to_time)
@@ -656,6 +662,14 @@ class MainWindow(QMainWindow):
             # Apply played note color to staff
             self.score_view.played_note_color = self.get_played_note_color()
             
+            if hasattr(self.score_view, 'set_active_color'):
+                self.score_view.set_active_color(self.score_view.played_note_color.name())
+            
+            # Apply view mode
+            if hasattr(self.score_view, 'set_view_mode'):
+                view_mode = self.settings.get("view_mode", "paging")
+                self.score_view.set_view_mode(view_mode)
+            
             self.score_view.update()
             
             # Apply preparation time to staff (note: requires reloading song to take effect)
@@ -679,6 +693,10 @@ class MainWindow(QMainWindow):
             
             # Start the current training mode (continues from current position)
             self.training_manager.start()
+            
+            # Start JS playback
+            if hasattr(self.score_view, 'play'):
+                self.score_view.play()
                         
             # Start the timer for updates
             self.midi_engine.timer.start()
@@ -695,6 +713,10 @@ class MainWindow(QMainWindow):
         """Pause current training mode"""
         self.training_manager.stop()
         self.midi_engine.timer.stop()
+        
+        # Pause JS playback
+        if hasattr(self.score_view, 'stop'):
+            self.score_view.stop()
         
         # Clear all highlighted keys when pausing
         self._clear_all_active_notes()
@@ -714,6 +736,10 @@ class MainWindow(QMainWindow):
         self.training_manager.stop()
         self.midi_engine.timer.stop()
         
+        # Stop JS playback
+        if hasattr(self.score_view, 'stop'):
+            self.score_view.stop()
+        
         # Reset midi_engine to start position (will be adjusted to negative time in play())
         self.midi_engine.paused_at = 0
         
@@ -726,6 +752,9 @@ class MainWindow(QMainWindow):
         self._clear_all_active_notes()
         
         self.score_view.go_to_start()  # Reset to start position with preparation time (-prep_time)
+        if hasattr(self.score_view, 'reset_score'):
+            self.score_view.reset_score()
+            
         self.btn_play.setEnabled(True)
         self.btn_pause.setEnabled(False)
         mode_name = self.training_manager.get_current_mode_name()
@@ -1291,14 +1320,14 @@ class MainWindow(QMainWindow):
     def update_playback_time(self, time_sec):
         # Update progress bar and score
         self.progress_bar.set_time(time_sec)
-        # self.score_view.set_playback_time(time_sec)
-        self.score_view.move_cursor(time_sec * 100) # Dummy conversion for now
+        self.score_view.set_playback_time(time_sec)
+        # self.score_view.move_cursor(time_sec * 100) # Dummy conversion for now
     
     def seek_to_time(self, time_sec):
         """Seek to specific time in song"""
         # Reset staff triggers when seeking
         # self.score_view.reset_triggers()
-        self.score_view.move_cursor(time_sec * 100) # Dummy conversion for now
+        self.score_view.set_playback_time(time_sec)
         
         if hasattr(self.midi_engine, 'seek'):
             self.midi_engine.seek(time_sec)
@@ -1327,7 +1356,16 @@ class MainWindow(QMainWindow):
         if color is None:
             color = self.get_played_note_color()
         self.piano_widget.note_on(pitch, color)
-        self.score_view.note_on(pitch)
+        
+        # Score feedback (highlighting)
+        if hasattr(self.score_view, 'highlight_note_by_pitch'):
+             # Use the note color for highlighting
+             note_color = self.score_view.get_note_color(pitch) if hasattr(self.score_view, 'get_note_color') else "red"
+             self.score_view.highlight_note_by_pitch(pitch, note_color)
+        
+        # Arduino Feedback
+        if self.arduino_connected and self.arduino_serial:
+            self.send_arduino_led_on(pitch, velocity)
     
     def _deactivate_piano_key(self, pitch, stop_audio=True):
         """Centralized method to deactivate a piano key with visual and audio"""
@@ -1344,21 +1382,36 @@ class MainWindow(QMainWindow):
         
         # Visual feedback
         self.piano_widget.note_off(pitch)
-        self.score_view.note_off(pitch)
+        
+        # Score feedback (unhighlight)
+        if hasattr(self.score_view, 'unhighlight_note_by_pitch'):
+            self.score_view.unhighlight_note_by_pitch(pitch)
+            
+        # Arduino Feedback
+        if self.arduino_connected and self.arduino_serial:
+            self.send_arduino_led_off(pitch)
     
     def on_staff_note_triggered(self, pitch, velocity):
         """Called when a note crosses the red line on the staff"""
-        # In Practice mode, NEVER auto-play - user must press keys manually
+        print(f"[MainWindow] Staff note triggered: pitch={pitch}")
+        
         should_play = True
+        
+        # Check training mode
         if hasattr(self, 'training_manager'):
             mode_name = self.training_manager.get_current_mode_name()
             if mode_name == 'Practice':
-                should_play = False  # Show visual but no audio
+                should_play = False
         
+        # If MidiEngine is playing, it handles audio. We only want visual feedback.
+        if self.midi_engine.is_playing:
+            should_play = False
+            
         self._activate_piano_key(pitch, velocity, play_audio=should_play)
     
     def on_staff_note_ended(self, pitch):
         """Called when a note ends (crosses red line + duration)"""
+        print(f"[MainWindow] Staff note ended: pitch={pitch}")
         # In Practice mode, don't auto-stop - user controls audio
         should_stop = True
         if hasattr(self, 'training_manager'):

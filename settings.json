@@ -24,10 +24,10 @@
     255,
     0
   ],
-  "visual_zoom": 135,
-  "playback_tempo": 25,
+  "visual_zoom": 83,
+  "playback_tempo": 100,
   "playback_speed": 100,
-  "show_staff_note_colors": false,
+  "show_staff_note_colors": true,
   "ledteacher_enabled": true,
   "leds_per_key": 1,
   "led_brightness": 0,
