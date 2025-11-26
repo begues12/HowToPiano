@@ -4,6 +4,7 @@ A Python application that acts as a piano teacher, connecting to an Arduino via 
 
 ## Features
 - **Professional Score View**: Interactive musical staff with real-time note highlighting using Bravura font.
+- **Asynchronous Loading System**: Non-blocking song loading with progress dialog and cancel button - UI stays responsive.
 - **Automatic Timing Synchronization**: AI-powered system that measures and adjusts audio-visual sync in real-time.
 - **Widget-Based Notes**: 6 musical figure types (whole, half, quarter, eighth, sixteenth, thirtysecond) with precise rendering.
 - **Grand Piano Synthesis**: Professional piano sound with 12 harmonics, inharmonicity modeling, and multi-string chorus.
@@ -45,9 +46,28 @@ A Python application that acts as a piano teacher, connecting to an Arduino via 
 python main.py
 ```
 
+## Performance Optimizations
+
+The application includes several performance optimizations for a smooth, professional experience:
+
+### Asynchronous Loading System
+- **Non-blocking Operations**: Songs load in background threads, UI stays responsive
+- **Progress Feedback**: Modern loading dialog with real-time progress updates
+- **Cancellable Operations**: Cancel button allows stopping long-running operations
+- **Error Handling**: Robust error handling with clear user messages
+
+See [PERFORMANCE_ASYNC_LOADING.md](PERFORMANCE_ASYNC_LOADING.md) for detailed documentation.
+
+### Benefits
+✅ UI never freezes during song loading
+✅ Visual feedback shows exactly what's happening
+✅ Can cancel operations at any time
+✅ Professional look and feel
+
 ## Troubleshooting
 - If `verovio` fails to load, ensure the python package is installed correctly.
 - If audio is silent, check if `fluidsynth` is installed and a SoundFont is present.
+- If loading seems slow, check file size - large MIDI files take longer to parse.
 
 ## Automatic Timing Synchronization
 

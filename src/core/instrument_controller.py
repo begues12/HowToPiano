@@ -75,15 +75,23 @@ class InstrumentController(QObject):
                 # Map color to string if needed, or just use default
                 self.score_view.highlight_note_by_pitch(pitch, "red")
                 
-        # 4. Arduino (LEDs)
+        # 4. Arduino (LEDs) - BINARY PROTOCOL
         if arduino and self.arduino:
-            # Assuming ArduinoWorker has this method, or we add it
             if hasattr(self.arduino, 'send_note_on'):
-                self.arduino.send_note_on(pitch, velocity)
+                # Use color from QColor if provided, else default green
+                if color:
+                    r, g, b = color.red(), color.green(), color.blue()
+                    self.arduino.send_note_on(pitch, r, g, b)
+                else:
+                    self.arduino.send_note_on(pitch, 0, 255, 0)  # Default green
             elif hasattr(self.arduino, 'serial') and self.arduino.serial:
                 try:
-                    cmd = f"ON:{pitch}:{velocity}\n"
-                    self.arduino.serial.write(cmd.encode())
+                    # Binary: [led_index][state][R][G][B]
+                    led_index = pitch - 21
+                    if 0 <= led_index < 88:
+                        packet = bytes([led_index, 1, 0, 255, 0])
+                        self.arduino.serial.write(packet)
+                        self.arduino.serial.flush()
                 except Exception as e:
                     print(f"Arduino send error: {e}")
 
@@ -108,14 +116,18 @@ class InstrumentController(QObject):
             if hasattr(self.score_view, 'unhighlight_note_by_pitch'):
                 self.score_view.unhighlight_note_by_pitch(pitch)
                 
-        # 4. Arduino (LEDs)
+        # 4. Arduino (LEDs) - BINARY PROTOCOL - ALWAYS SEND OFF
         if arduino and self.arduino:
             if hasattr(self.arduino, 'send_note_off'):
                 self.arduino.send_note_off(pitch)
             elif hasattr(self.arduino, 'serial') and self.arduino.serial:
                 try:
-                    cmd = f"OFF:{pitch}\n"
-                    self.arduino.serial.write(cmd.encode())
+                    # Binary: [led_index][state=0][0][0][0]
+                    led_index = pitch - 21
+                    if 0 <= led_index < 88:
+                        packet = bytes([led_index, 0, 0, 0, 0])
+                        self.arduino.serial.write(packet)
+                        self.arduino.serial.flush()
                 except Exception as e:
                     print(f"Arduino send error: {e}")
 

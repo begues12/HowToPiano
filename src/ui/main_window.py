@@ -14,10 +14,13 @@ from src.core.arduino_conn import ArduinoWorker
 from src.core.midi_input import MidiInputWorker
 from src.core.synth import PianoSynth
 from src.core.midi_engine import MidiEngine
+from src.core.song_loader import SongLoaderWorker
+from src.core.midi_file_loader import MidiFileLoaderWorker
 from src.ui.score_view import SongLibrary
 # from src.ui.staff_widget import StaffWidget  # Replaced by WebScoreWidget
 from src.ui.web_score_widget import WebScoreWidget
 from src.ui.settings_dialog import SettingsDialog
+from src.ui.loading_dialog import LoadingDialog
 from src.ui.piano_widget import PianoWidget
 from src.ui.song_list_widget import SongListWidget
 from src.ui.progress_bar import ProgressBar
@@ -605,65 +608,103 @@ class MainWindow(QMainWindow):
         self.cleanup_timer.start(100)  # Run every 100ms
 
     def open_midi(self):
+        """Open MIDI file with async loading dialog"""
         file_name, _ = QFileDialog.getOpenFileName(self, "Open MIDI File", "", "MIDI Files (*.mid *.midi)")
-        if file_name:
-            self.status_label.setText(f"Loading {os.path.basename(file_name)}...")
-            if self.midi_engine.load_midi(file_name):
-                # Add to library
-                self.song_library.add_song(file_name)
-                # Load into staff widget
-                self.score_view.load_midi_notes(file_name)
-                
-                # CRITICAL: Apply current zoom settings after loading MIDI
-                visual_zoom = self.settings.get("visual_zoom", 100)
-                zoom_scale = visual_zoom / 100.0
-                
-                # Update zoom slider to show current value (without triggering change event)
-                self.zoom_slider.blockSignals(True)
-                self.zoom_slider.setValue(int(visual_zoom))
-                self.zoom_spinbox.blockSignals(True)
-                self.zoom_spinbox.setValue(int(visual_zoom))
-                self.zoom_slider.blockSignals(False)
-                self.zoom_spinbox.blockSignals(False)
-                
-                self.score_view.visual_zoom_scale = zoom_scale
-                # self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
-                # self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
-                
-                # Calculate pixels_per_second (for scroll speed only, not note positions)
-                # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
-                original_tempo_factor = self.score_view.tempo_bpm / 120.0
-                tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
-                # self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
-                
-                # Recalculate Y positions only (for staff display)
-                for note in self.score_view.notes:
-                    note['y'] = self.score_view.pitch_to_y(note['pitch'])
-                
-                print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
-                
-                # Force repaint to show changes immediately
-                self.score_view.update()
-                
-                # Reset staff triggers for new song
-                self.score_view.reset_triggers()
-                
-                # Set progress bar duration
-                if self.midi_engine.events:
-                    total_time = max(evt['time'] for evt in self.midi_engine.events)
-                    self.progress_bar.set_duration(total_time)
-                
-                # Check and adapt to piano range
-                self.adapt_song_to_piano()
-                
-                # Sync finger assignments from staff to piano
-                self.sync_finger_assignments()
-                
-                self.song_list.refresh()  # Refresh the library list
-                self.status_label.setText(f"Loaded: {os.path.basename(file_name)}")
-                self.btn_play.setEnabled(True)
-            else:
-                QMessageBox.critical(self, "Error", "Failed to load MIDI file.")
+        if not file_name:
+            return
+        
+        # Create loading dialog
+        loading_dialog = LoadingDialog(
+            title="Loading MIDI",
+            message=f"Loading {os.path.basename(file_name)}...",
+            parent=self
+        )
+        
+        # Create worker thread
+        self.midi_file_loader_worker = MidiFileLoaderWorker(
+            self.midi_engine,
+            self.song_library,
+            file_name
+        )
+        
+        # Connect signals
+        self.midi_file_loader_worker.progress_update.connect(
+            lambda msg, prog: (loading_dialog.set_status(msg), loading_dialog.set_progress(prog))
+        )
+        self.midi_file_loader_worker.load_complete.connect(
+            lambda data: self._on_midi_file_loaded(data, loading_dialog)
+        )
+        self.midi_file_loader_worker.load_failed.connect(
+            lambda error: self._on_midi_file_load_failed(error, loading_dialog)
+        )
+        
+        # Connect cancel button
+        loading_dialog.cancel_requested.connect(self.midi_file_loader_worker.cancel)
+        loading_dialog.cancel_requested.connect(loading_dialog.close)
+        
+        # Start loading
+        self.midi_file_loader_worker.start()
+        loading_dialog.exec()
+    
+    def _on_midi_file_loaded(self, midi_data, loading_dialog):
+        """Called when MIDI file loading completes successfully"""
+        try:
+            # Load into staff widget
+            self.score_view.load_midi_notes(midi_data['path'])
+            
+            # Apply current zoom settings
+            visual_zoom = self.settings.get("visual_zoom", 100)
+            zoom_scale = visual_zoom / 100.0
+            
+            # Update zoom slider without triggering events
+            self.zoom_slider.blockSignals(True)
+            self.zoom_slider.setValue(int(visual_zoom))
+            self.zoom_spinbox.blockSignals(True)
+            self.zoom_spinbox.setValue(int(visual_zoom))
+            self.zoom_slider.blockSignals(False)
+            self.zoom_spinbox.blockSignals(False)
+            
+            self.score_view.visual_zoom_scale = zoom_scale
+            
+            # Recalculate Y positions for staff display
+            for note in self.score_view.notes:
+                note['y'] = self.score_view.pitch_to_y(note['pitch'])
+            
+            # Force repaint
+            self.score_view.update()
+            
+            # Reset staff triggers
+            self.score_view.reset_triggers()
+            
+            # Set progress bar duration
+            if midi_data['total_time'] > 0:
+                self.progress_bar.set_duration(midi_data['total_time'])
+            
+            # Check and adapt to piano range
+            self.adapt_song_to_piano()
+            
+            # Sync finger assignments
+            self.sync_finger_assignments()
+            
+            # Refresh song list (async safe)
+            QTimer.singleShot(100, self.song_list.refresh)
+            
+            # Update UI
+            self.status_label.setText(f"Loaded: {midi_data['name']}")
+            self.btn_play.setEnabled(True)
+            
+            print(f"✅ MIDI file loaded: {midi_data['name']}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to finalize MIDI: {str(e)}")
+        
+        finally:
+            loading_dialog.close()
+    
+    def _on_midi_file_load_failed(self, error, loading_dialog):
+        """Called when MIDI file loading fails"""
+        loading_dialog.close()
+        QMessageBox.critical(self, "Error", f"Failed to load MIDI file:\\n{error}")
 
     def open_settings(self):
         dlg = SettingsDialog(self.settings, self)
@@ -1311,78 +1352,103 @@ class MainWindow(QMainWindow):
         self.change_tempo(value)
     
     def load_song_from_library(self, song_id, path):
-        """Load a song from the library"""
+        """Load a song from the library with async loading dialog"""
         print(f"MainWindow: Loading song_id={song_id}, path={path}")
         song = self.song_library.get_song_by_id(song_id)
-        if song:
-            # Use the path from the song metadata, not the signal parameter
-            actual_path = song['path']
-            print(f"MainWindow: Using actual path: {actual_path}")
-            self.status_label.setText(f"Loading {song['name']}...")
-            if os.path.exists(actual_path):
-                if self.midi_engine.load_midi(actual_path):
-                    # Pass song UUID to Practice Mode for statistics tracking
-                    if hasattr(self.training_manager, 'modes'):
-                        practice_mode = self.training_manager.modes.get('practice')
-                        if practice_mode:
-                            practice_mode.song_uuid = song_id
-                            print(f"MainWindow: Set Practice Mode song_uuid to {song_id}")
-                    self.score_view.load_midi_notes(actual_path)
-                    
-                    # CRITICAL: Apply current zoom settings after loading MIDI
-                    # This ensures tempo calculation includes the correct zoom factor
-                    visual_zoom = self.settings.get("visual_zoom", 100)
-                    zoom_scale = visual_zoom / 100.0
-                    
-                    # Update zoom slider to show current value (without triggering change event)
-                    self.zoom_slider.blockSignals(True)
-                    self.zoom_slider.setValue(int(visual_zoom))
-                    self.zoom_spinbox.blockSignals(True)
-                    self.zoom_spinbox.setValue(int(visual_zoom))
-                    self.zoom_slider.blockSignals(False)
-                    self.zoom_spinbox.blockSignals(False)
-                    
-                    self.score_view.visual_zoom_scale = zoom_scale
-                    # self.score_view.staff_spacing = self.score_view.base_staff_spacing * zoom_scale
-                    # self.score_view.left_margin = int(self.score_view.base_left_margin * zoom_scale)
-                    
-                    # Recalculate pixels_per_second with correct zoom AND tempo multiplier
-                    # Formula: base * (original_tempo/120) * (tempo_multiplier) * zoom_scale
-                    # original_tempo_factor = self.score_view.tempo_bpm / 120.0
-                    # tempo_multiplier = self.settings.get("playback_tempo", 100) / 100.0
-                    # self.score_view.pixels_per_second = self.score_view.base_pixels_per_second * original_tempo_factor * tempo_multiplier * zoom_scale
-                    
-                    # Recalculate Y positions only (for staff display)
-                    # for note in self.score_view.notes:
-                    #     note['y'] = self.score_view.pitch_to_y(note['pitch'])
-                    
-                    # print(f"StaffWidget: Applied zoom {visual_zoom}% after loading (pixels_per_second={self.score_view.pixels_per_second:.1f})")
-                    
-                    # Force repaint to show changes immediately
-                    # self.score_view.update()
-                    
-                    # Set progress bar duration
-                    if self.midi_engine.events:
-                        total_time = max(evt['time'] for evt in self.midi_engine.events)
-                        self.progress_bar.set_duration(total_time)
-                    
-                    # Check and adapt to piano range
-                    self.adapt_song_to_piano()
-                    
-                    # Sync finger assignments from staff to piano
-                    # self.sync_finger_assignments()
-                    
-                    self.status_label.setText(f"{song['name']}")
-                    self.btn_play.setEnabled(True)
-                    
-                    # Reset to start position LAST - after all other operations
-                    # Use QTimer to ensure it happens after all pending UI updates
-                    # from PyQt6.QtCore import QTimer
-                    # QTimer.singleShot(50, self.score_view.go_to_start)
-                else:
-                    QMessageBox.critical(self, "Error", "Failed to load song.")
-            else:
-                QMessageBox.critical(self, "Error", f"Song file not found: {actual_path}")
+        if not song:
+            QMessageBox.critical(self, "Error", f"Song not found: {song_id}")
+            return
+        
+        actual_path = song['path']
+        print(f"MainWindow: Using actual path: {actual_path}")
+        
+        # Create loading dialog
+        loading_dialog = LoadingDialog(
+            title="Loading Song",
+            message=f"Loading {song['name']}...",
+            parent=self
+        )
+        
+        # Create worker thread
+        self.song_loader_worker = SongLoaderWorker(
+            self.midi_engine,
+            self.song_library,
+            song_id,
+            actual_path
+        )
+        
+        # Connect signals
+        self.song_loader_worker.progress_update.connect(
+            lambda msg, prog: (loading_dialog.set_status(msg), loading_dialog.set_progress(prog))
+        )
+        self.song_loader_worker.load_complete.connect(
+            lambda data: self._on_song_loaded(data, loading_dialog)
+        )
+        self.song_loader_worker.load_failed.connect(
+            lambda error: self._on_song_load_failed(error, loading_dialog)
+        )
+        
+        # Connect cancel button
+        loading_dialog.cancel_requested.connect(self.song_loader_worker.cancel)
+        loading_dialog.cancel_requested.connect(loading_dialog.close)
+        
+        # Start loading
+        self.song_loader_worker.start()
+        loading_dialog.exec()
+    
+    def _on_song_loaded(self, song_data, loading_dialog):
+        """Called when song loading completes successfully"""
+        song = song_data['song']
+        actual_path = song_data['path']
+        
+        try:
+            # Pass song UUID to Practice Mode for statistics tracking
+            if hasattr(self.training_manager, 'modes'):
+                practice_mode = self.training_manager.modes.get('practice')
+                if practice_mode:
+                    practice_mode.song_uuid = song_data['song']['id']
+                    print(f"MainWindow: Set Practice Mode song_uuid to {song_data['song']['id']}")
+            
+            # Load notes into score view
+            self.score_view.load_midi_notes(actual_path)
+            
+            # CRITICAL: Apply current zoom settings after loading MIDI
+            visual_zoom = self.settings.get("visual_zoom", 100)
+            zoom_scale = visual_zoom / 100.0
+            
+            # Update zoom slider to show current value (without triggering change event)
+            self.zoom_slider.blockSignals(True)
+            self.zoom_slider.setValue(int(visual_zoom))
+            self.zoom_spinbox.blockSignals(True)
+            self.zoom_spinbox.setValue(int(visual_zoom))
+            self.zoom_slider.blockSignals(False)
+            self.zoom_spinbox.blockSignals(False)
+            
+            self.score_view.visual_zoom_scale = zoom_scale
+            
+            # Set progress bar duration
+            if song_data['total_time'] > 0:
+                self.progress_bar.set_duration(song_data['total_time'])
+            
+            # Check and adapt to piano range
+            self.adapt_song_to_piano()
+            
+            # Update UI
+            self.status_label.setText(f"{song['name']}")
+            self.btn_play.setEnabled(True)
+            
+            print(f"✅ Song loaded successfully: {song['name']}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to finalize song: {str(e)}")
+        
+        finally:
+            loading_dialog.close()
+    
+    def _on_song_load_failed(self, error, loading_dialog):
+        """Called when song loading fails"""
+        loading_dialog.close()
+        QMessageBox.critical(self, "Error", f"Failed to load song:\n{error}")
     
     def update_playback_time(self, time_sec):
         # Update progress bar and score
@@ -1742,7 +1808,7 @@ class MainWindow(QMainWindow):
             "show_mistakes": True,
             "repeat_section": False,
             "practice_tempo": 75,
-            "baud_rate": 115200,
+            "baud_rate": 500000,
             "auto_reconnect": True,
             "played_note_color": [0, 120, 255],  # Electric blue default
             "visual_zoom": 100,  # Default 100% zoom
@@ -1794,67 +1860,67 @@ class MainWindow(QMainWindow):
         print("  ❌ No Arduino detected")
     
     def try_connect_arduino(self, port):
-        """Try to connect to Arduino on specified port"""
+        """Try to connect to Arduino on specified port - BINARY PROTOCOL"""
         try:
             print(f"    Opening {port}...")
-            ser = serial.Serial(port, 115200, timeout=0.5)
-            print(f"    Waiting for Arduino to initialize (3 seconds)...")
-            time.sleep(3)  # Wait longer for Arduino reset and startup animation
+            ser = serial.Serial(port, 500000, timeout=0.5)
+            print(f"    Waiting for Arduino ready signal (2 seconds)...")
+            time.sleep(2)  # Wait for Arduino reset and startup flash
             
-            # Flush any startup animation messages
-            while ser.in_waiting > 0:
-                line = ser.readline().decode('utf-8', errors='ignore').strip()
-                print(f"    Arduino: {line}")
-                if "READY" in line:
-                    print(f"    ✅ Arduino connected on {port}!")
-                    self.arduino_serial = ser
-                    self.arduino_connected = True
-                    self.update_arduino_indicator()
-                    return True
+            # Look for ready byte (0xFF = 255)
+            ready = False
+            start_time = time.time()
             
-            # Send PING to check connection
-            print(f"    Sending PING...")
-            ser.write(b"PING\n")
-            time.sleep(0.2)
-            
-            # Read multiple responses
-            attempts = 0
-            while attempts < 3:
+            while time.time() - start_time < 3:  # 3 second timeout
                 if ser.in_waiting > 0:
-                    response = ser.readline().decode('utf-8', errors='ignore').strip()
-                    print(f"    Response: {response}")
-                    
-                    if "PONG" in response or "READY" in response:
-                        print(f"    ✅ Arduino connected on {port}!")
-                        self.arduino_serial = ser
-                        self.arduino_connected = True
-                        self.update_arduino_indicator()
-                        return True
-                
+                    byte = ser.read(1)
+                    if byte == b'\xFF':
+                        ready = True
+                        print(f"    ✅ Arduino READY (binary protocol) on {port}!")
+                        break
                 time.sleep(0.1)
-                attempts += 1
             
-            # Try TEST command as final verification
-            print(f"    Trying TEST command...")
-            ser.write(b"TEST\n")
-            time.sleep(0.3)
-            
-            if ser.in_waiting > 0:
-                response = ser.readline().decode('utf-8', errors='ignore').strip()
-                print(f"    Response: {response}")
+            if ready:
+                self.arduino_serial = ser
+                self.arduino_connected = True
+                self.update_arduino_indicator()
                 
-                if response:  # Any response means Arduino is working
-                    print(f"    ✅ Arduino connected on {port} (via TEST)!")
-                    self.arduino_serial = ser
-                    self.arduino_connected = True
-                    self.update_arduino_indicator()
-                    return True
-            
-            ser.close()
-            print(f"    ❌ No valid response from {port}")
+                # Test with a LED command - turn on LED 0 briefly
+                print(f"    Testing LED command...")
+                test_packet = bytes([0, 1, 0, 255, 0])  # LED 0, ON, Green
+                ser.write(test_packet)
+                time.sleep(0.1)
+                
+                # Turn it off
+                off_packet = bytes([0, 0, 0, 0, 0])
+                ser.write(off_packet)
+                
+                print(f"    ✅ Binary protocol working!")
+                return True
+            else:
+                print(f"    ⚠️  No ready signal received, but connecting anyway...")
+                # Try anyway - some Arduinos might not send ready
+                self.arduino_serial = ser
+                self.arduino_connected = True
+                self.update_arduino_indicator()
+                
+                # Test with LED command
+                test_packet = bytes([0, 1, 255, 0, 0])  # LED 0, Red
+                ser.write(test_packet)
+                time.sleep(0.2)
+                off_packet = bytes([0, 0, 0, 0, 0])
+                ser.write(off_packet)
+                
+                print(f"    ✅ Connected on {port} (no handshake)")
+                return True
             
         except Exception as e:
             print(f"    ❌ Error connecting to {port}: {e}")
+            try:
+                if 'ser' in locals():
+                    ser.close()
+            except:
+                pass
         
         return False
     
@@ -1896,54 +1962,47 @@ class MainWindow(QMainWindow):
             self.btn_arduino.setToolTip("Arduino: Disconnected")
     
     def send_arduino_led_on(self, midi_note, velocity=100):
-        """Send LED ON command to Arduino when piano key is pressed"""
+        """Send LED ON command to Arduino - BINARY, IMMEDIATE FLUSH"""
         if not self.arduino_connected or not self.arduino_serial:
             return
         
         try:
-            command = f"ON:{midi_note}:{velocity}\n"
-            self.arduino_serial.write(command.encode())
-            
-            # Log to console if open
-            if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
-                self.arduino_console_dialog.log_sent(command.strip())
+            # Binary protocol: [note_index][state][R][G][B]
+            led_index = midi_note - 21  # Convert MIDI to LED index (0-87)
+            if 0 <= led_index < 88:
+                # Green color with velocity-based brightness
+                brightness = int((velocity / 127) * 255)
+                r, g, b = 0, brightness, 0
+                packet = bytes([led_index, 1, r, g, b])
                 
-                # Read response
-                time.sleep(0.01)
-                if self.arduino_serial.in_waiting > 0:
-                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
-                    if response:
-                        self.arduino_console_dialog.log_received(response)
+                self.arduino_serial.write(packet)
+                self.arduino_serial.flush()  # Force immediate send
+                
+                # Log to console if open (no waiting for response)
+                if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
+                    self.arduino_console_dialog.log_sent_binary(f"ON: Note {midi_note} → LED {led_index} RGB({r},{g},{b})")
         
         except Exception as e:
             print(f"Error sending LED ON: {e}")
-            self.arduino_connected = False
-            self.update_arduino_indicator()
     
     def send_arduino_led_off(self, midi_note):
-        """Send LED OFF command to Arduino when piano key is released"""
+        """Send LED OFF command to Arduino - BINARY, IMMEDIATE FLUSH"""
         if not self.arduino_connected or not self.arduino_serial:
             return
         
         try:
-            command = f"OFF:{midi_note}\n"
-            self.arduino_serial.write(command.encode())
-            
-            # Log to console if open
-            if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
-                self.arduino_console_dialog.log_sent(command.strip())
+            led_index = midi_note - 21
+            if 0 <= led_index < 88:
+                packet = bytes([led_index, 0, 0, 0, 0])
+                self.arduino_serial.write(packet)
+                self.arduino_serial.flush()  # Force immediate send - CRITICAL for OFF
                 
-                # Read response
-                time.sleep(0.01)
-                if self.arduino_serial.in_waiting > 0:
-                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
-                    if response:
-                        self.arduino_console_dialog.log_received(response)
+                # Log to console if open
+                if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
+                    self.arduino_console_dialog.log_sent_binary(f"OFF: Note {midi_note} → LED {led_index}")
         
         except Exception as e:
             print(f"Error sending LED OFF: {e}")
-            self.arduino_connected = False
-            self.update_arduino_indicator()
     
     def open_arduino_console(self):
         """Open Arduino console dialog"""
@@ -2166,6 +2225,16 @@ class ArduinoConsoleDialog(QDialog):
             self.console.verticalScrollBar().maximum()
         )
     
+    def log_sent_binary(self, description):
+        """Log binary command with description"""
+        timestamp = time.strftime("%H:%M:%S")
+        self.console.append(f"<span style='color: #8b949e;'>[{timestamp}]</span> "
+                          f"<span style='color: #a371f7; font-weight: bold;'>⚡</span> "
+                          f"<span style='color: #a371f7;'>{description}</span>")
+        self.console.verticalScrollBar().setValue(
+            self.console.verticalScrollBar().maximum()
+        )
+    
     def log_received(self, response):
         """Log received response"""
         timestamp = time.strftime("%H:%M:%S")
@@ -2177,12 +2246,12 @@ class ArduinoConsoleDialog(QDialog):
         )
     
     def test_scale(self):
-        """Test C major scale"""
+        """Test C major scale - BINARY PROTOCOL"""
         if not self.serial_port:
             return
         
         self.console.append("")
-        self.console.append("<span style='color: #f0883e; font-weight: bold;'>🎵 Testing C Major Scale...</span>")
+        self.console.append("<span style='color: #f0883e; font-weight: bold;'>🎵 Testing C Major Scale (Binary)...</span>")
         
         # C major scale: C4-C5 (60-72)
         notes = [60, 62, 64, 65, 67, 69, 71, 72]
@@ -2190,23 +2259,18 @@ class ArduinoConsoleDialog(QDialog):
         
         try:
             for note, name in zip(notes, note_names):
-                # ON
-                command = f"ON:{note}:100"
-                self.serial_port.write((command + "\n").encode())
-                self.log_sent(command)
-                
-                time.sleep(0.05)
-                if self.serial_port.in_waiting > 0:
-                    response = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
-                    if response:
-                        self.log_received(response)
+                # ON - Binary packet
+                led_index = note - 21
+                packet_on = bytes([led_index, 1, 0, 255, 0])  # Green
+                self.serial_port.write(packet_on)
+                self.log_sent_binary(f"ON: {name} (MIDI {note}) → LED {led_index} Green")
                 
                 time.sleep(0.3)
                 
-                # OFF
-                command = f"OFF:{note}"
-                self.serial_port.write((command + "\n").encode())
-                self.log_sent(command)
+                # OFF - Binary packet
+                packet_off = bytes([led_index, 0, 0, 0, 0])
+                self.serial_port.write(packet_off)
+                self.log_sent_binary(f"OFF: {name}")
                 
                 time.sleep(0.05)
                 if self.serial_port.in_waiting > 0:

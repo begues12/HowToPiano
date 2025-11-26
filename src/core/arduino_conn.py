@@ -1,67 +1,63 @@
-from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex
 import serial
 import time
-import random
+import struct
 
 class ArduinoWorker(QObject):
-    note_on = pyqtSignal(int, int) # note, velocity
-    note_off = pyqtSignal(int)
+    """
+    Binary protocol Arduino worker - NO RESPONSES, MAXIMUM SPEED
+    
+    Protocol: 5 bytes per LED command
+    [note_number][state][R][G][B]
+    
+    Multiple LEDs can be sent in one packet for batch updates
+    """
+    note_on = pyqtSignal(int, int) # note, velocity (for physical piano input)
+    note_off = pyqtSignal(int)     # note (for physical piano input)
     connection_status = pyqtSignal(bool, str)
-    response_received = pyqtSignal(str) # Arduino responses
 
-    def __init__(self, port="COM3", baudrate=115200, mock=False):
+    def __init__(self, port="COM3", baudrate=500000, mock=False):
         super().__init__()
         self.port = port
-        self.baudrate = baudrate  # Changed to 115200 to match Arduino
+        self.baudrate = baudrate  # 500000 baud for maximum speed
         self.mock = mock
         self.running = False
         self.serial = None
+        self.write_mutex = QMutex()  # Thread-safe writing
+        self.command_buffer = []     # Buffer for batch commands
 
     def run(self):
         self.running = True
         if not self.mock:
             try:
                 print(f"🔌 Connecting to Arduino on {self.port} at {self.baudrate} baud...")
-                self.serial = serial.Serial(self.port, self.baudrate, timeout=0.5)
-                print(f"⏳ Waiting for Arduino initialization (3 seconds)...")
-                time.sleep(3)  # Wait for Arduino to reset and run startup animation
+                self.serial = serial.Serial(
+                    self.port, 
+                    self.baudrate, 
+                    timeout=0.1,
+                    write_timeout=0.1  # Non-blocking writes
+                )
+                print(f"⏳ Waiting for Arduino initialization (1 second)...")
+                time.sleep(1)  # Quick startup
                 
-                # Flush any startup messages and look for "READY"
+                # Wait for ready byte (0xFF)
                 start_time = time.time()
                 ready = False
-                startup_messages = []
                 
-                while time.time() - start_time < 5:  # 5 second timeout
-                    if self.serial.in_waiting:
-                        line = self.serial.readline().decode('utf-8', errors='ignore').strip()
-                        if line:
-                            startup_messages.append(line)
-                            print(f"  Arduino: {line}")
-                            if "READY" in line:
-                                ready = True
-                                break
+                while time.time() - start_time < 3:  # 3 second timeout
+                    if self.serial.in_waiting > 0:
+                        byte = self.serial.read(1)
+                        if byte == b'\xFF':
+                            ready = True
+                            print(f"✅ Arduino READY on {self.port} (binary protocol)")
+                            break
                     time.sleep(0.1)
                 
                 if ready:
-                    print(f"✅ Arduino READY on {self.port}")
                     self.connection_status.emit(True, f"Connected to {self.port}")
                 else:
-                    # Try PING as fallback
-                    print(f"  No READY signal, trying PING...")
-                    self.serial.write(b"PING\n")
-                    time.sleep(0.2)
-                    
-                    if self.serial.in_waiting:
-                        response = self.serial.readline().decode('utf-8', errors='ignore').strip()
-                        print(f"  Response: {response}")
-                        if "PONG" in response:
-                            ready = True
-                            print(f"✅ Arduino responding on {self.port}")
-                            self.connection_status.emit(True, f"Connected to {self.port}")
-                    
-                    if not ready:
-                        print(f"⚠️ Connected to {self.port} but no handshake received")
-                        self.connection_status.emit(True, f"Connected to {self.port} (no handshake)")
+                    print(f"⚠️ Connected to {self.port} but no ready signal (continuing anyway)")
+                    self.connection_status.emit(True, f"Connected to {self.port}")
                     
             except Exception as e:
                 print(f"❌ Error connecting to Arduino: {e}")
@@ -71,139 +67,115 @@ class ArduinoWorker(QObject):
         else:
             self.connection_status.emit(True, "Mock Mode")
 
+        # Main loop - NO READING, only for keep-alive
         while self.running:
-            if self.mock:
-                # Mock mode - no automatic notes, only responds to real input
-                # (Notes will come from mouse/MIDI controller instead)
-                QThread.msleep(100)
-            else:
-                if self.serial and self.serial.in_waiting:
-                    try:
-                        line = self.serial.readline().decode('utf-8', errors='ignore').strip()
-                        if line:
-                            self.parse_line(line)
-                            self.response_received.emit(line)
-                    except Exception as e:
-                        print(f"Serial read error: {e}")
-                QThread.msleep(10)
+            QThread.msleep(100)
 
-    def parse_line(self, line):
-        # Expected Protocol examples: 
-        # "ON:60:100" -> Note On 60, velocity 100
-        # "OFF:60"    -> Note Off 60
-        # Also receives feedback from Arduino like "LED ON: C4 (MIDI 60, LED index 39)"
+    def _write_binary(self, data):
+        """Internal method to write binary data - thread-safe, immediate flush"""
+        if not self.serial or not self.serial.is_open or self.mock:
+            return
+        
+        self.write_mutex.lock()
         try:
-            parts = line.split(':')
-            cmd = parts[0].upper()
-            if cmd == "ON" and len(parts) >= 3:
-                self.note_on.emit(int(parts[1]), int(parts[2]))
-            elif cmd == "OFF" and len(parts) >= 2:
-                self.note_off.emit(int(parts[1]))
-        except (ValueError, IndexError):
-            pass
+            self.serial.write(data)
+            self.serial.flush()  # Force immediate send for real-time response
+        except Exception as e:
+            print(f"Arduino write error: {e}")
+        finally:
+            self.write_mutex.unlock()
 
-    def send_note_on(self, note, brightness=100):
-        """Send LED ON command to Arduino
+    def send_note_on(self, note, r=0, g=255, b=0):
+        """Send LED ON command - BINARY, NO RESPONSE
         
         Args:
-            note: MIDI note number (21-108 for piano)
-            brightness: LED brightness (0-100)
+            note: MIDI note number (21-108)
+            r, g, b: RGB color (0-255)
         """
-        if self.serial and self.serial.is_open:
-            try:
-                cmd = f"ON:{note}:{brightness}\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino send error: {e}")
+        led_index = note - 21  # Convert MIDI to LED index
+        if 0 <= led_index < 88:
+            packet = bytes([led_index, 1, r, g, b])  # state=1 (ON)
+            self._write_binary(packet)
 
     def send_note_off(self, note):
-        """Send LED OFF command to Arduino
+        """Send LED OFF command - BINARY, NO RESPONSE
         
         Args:
-            note: MIDI note number (21-108 for piano)
+            note: MIDI note number (21-108)
         """
-        if self.serial and self.serial.is_open:
-            try:
-                cmd = f"OFF:{note}\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino send error: {e}")
+        led_index = note - 21
+        if 0 <= led_index < 88:
+            packet = bytes([led_index, 0, 0, 0, 0])  # state=0 (OFF)
+            self._write_binary(packet)
 
     def send_led_rgb(self, note, r, g, b):
-        """Send LED RGB command to Arduino
+        """Send LED with specific RGB color - BINARY, NO RESPONSE
         
         Args:
-            note: MIDI note number
-            r, g, b: RGB color values (0-255)
+            note: MIDI note number (21-108)
+            r, g, b: RGB values (0-255)
         """
-        if self.serial and self.serial.is_open:
-            try:
-                cmd = f"LED:{note},{r},{g},{b}\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino send error: {e}")
+        led_index = note - 21
+        if 0 <= led_index < 88:
+            packet = bytes([led_index, 1, r, g, b])
+            self._write_binary(packet)
 
     def send_batch_leds(self, led_data):
-        """Send multiple LED updates in one command for better performance
+        """Send multiple LEDs in ONE packet - MAXIMUM SPEED
         
         Args:
-            led_data: List of tuples (note, r, g, b)
+            led_data: List of tuples (note, r, g, b) or (note, state, r, g, b)
         """
-        if self.serial and self.serial.is_open:
-            try:
-                # Format: BATCH:note1,r,g,b;note2,r,g,b;note3,r,g,b
-                batch_str = ";".join([f"{note},{r},{g},{b}" for note, r, g, b in led_data])
-                cmd = f"BATCH:{batch_str}\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino batch send error: {e}")
+        if not led_data:
+            return
+        
+        # Build multi-LED packet
+        packet = bytearray()
+        for item in led_data:
+            if len(item) == 4:
+                note, r, g, b = item
+                state = 1  # ON
+            elif len(item) == 5:
+                note, state, r, g, b = item
+            else:
+                continue
+            
+            led_index = note - 21
+            if 0 <= led_index < 88:
+                packet.extend([led_index, state, r, g, b])
+        
+        if packet:
+            self._write_binary(bytes(packet))
 
     def clear_all_leds(self):
-        """Turn off all LEDs"""
-        if self.serial and self.serial.is_open:
-            try:
-                cmd = "CLEAR\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino clear error: {e}")
+        """Turn off all LEDs - BINARY COMMAND"""
+        packet = bytes([255, 0, 0, 0, 0])  # Special command: CLEAR
+        self._write_binary(packet)
 
     def set_brightness(self, brightness):
-        """Set global LED brightness
+        """Set global LED brightness - BINARY COMMAND
         
         Args:
             brightness: 0-255
         """
-        if self.serial and self.serial.is_open:
-            try:
-                cmd = f"BRIGHTNESS:{brightness}\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino brightness error: {e}")
+        brightness = max(0, min(255, brightness))
+        packet = bytes([255, 1, brightness, 0, 0])  # Special command: BRIGHTNESS
+        self._write_binary(packet)
 
     def test_leds(self):
-        """Run Arduino test animation"""
-        if self.serial and self.serial.is_open:
-            try:
-                cmd = "TEST\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino test error: {e}")
-
-    def ping(self):
-        """Send ping to check Arduino responsiveness"""
-        if self.serial and self.serial.is_open:
-            try:
-                cmd = "PING\n"
-                self.serial.write(cmd.encode())
-            except Exception as e:
-                print(f"Arduino ping error: {e}")
+        """Run test animation - BINARY COMMAND"""
+        packet = bytes([255, 2, 0, 0, 0])  # Special command: TEST
+        self._write_binary(packet)
 
     def stop(self):
         self.running = False
         if self.serial:
             try:
                 self.clear_all_leds()  # Turn off all LEDs before closing
-                time.sleep(0.1)
+                time.sleep(0.05)  # Brief wait for clear command
             except:
                 pass
-            self.serial.close()
+            try:
+                self.serial.close()
+            except:
+                pass

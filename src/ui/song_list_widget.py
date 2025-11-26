@@ -82,11 +82,14 @@ class SongListWidget(QWidget):
         self.refresh()
     
     def refresh(self):
-        """Reload the song list"""
-        self.library.songs = self.library.load_metadata()
-        self.all_songs = self.library.songs.copy()
-        self.load_recent_songs()
-        self.apply_filter(self.filter_combo.currentText())
+        """Reload the song list (async safe)"""
+        try:
+            self.library.songs = self.library.load_metadata()
+            self.all_songs = self.library.songs.copy()
+            self.load_recent_songs()
+            self.apply_filter(self.filter_combo.currentText())
+        except Exception as e:
+            print(f"Error refreshing song list: {e}")
     
     def load_recent_songs(self):
         """Load recent songs from file"""
