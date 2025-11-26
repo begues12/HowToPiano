@@ -412,3 +412,19 @@ class WebScoreWidget(QWidget):
     def set_view_mode(self, mode):
         """Sets the view mode: 'scrolling' or 'paging'"""
         self.webview.page().runJavaScript(f"setViewMode('{mode}');")
+    
+    def start_countdown(self, callback):
+        """Starts a visual countdown and then calls the callback"""
+        from PyQt6.QtCore import QTimer
+        
+        # Use the preparation_time property
+        duration = getattr(self, 'preparation_time', 3.0)
+        
+        # Trigger JS visual
+        self.webview.page().runJavaScript(f"if(typeof startCountdown === 'function') startCountdown({duration});")
+        
+        # Create a timer to trigger the callback after the duration
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setSingleShot(True)
+        self._countdown_timer.timeout.connect(callback)
+        self._countdown_timer.start(int(duration * 1000))

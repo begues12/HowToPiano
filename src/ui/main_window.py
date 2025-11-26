@@ -211,6 +211,11 @@ class MainWindow(QMainWindow):
         svg_stop = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>'
         svg_music_note = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>'
         svg_settings = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>'
+        svg_page = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 7h10v2H7zm0 4h10v2H7zm0 4h7v2H7z"/></svg>'
+        svg_scroll = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M15 4H5v16h14V8h-4V4zM3 2.99h18L21 9l-6 6 6 6H3V2.99zM19 9l-4-4v4h4z"/></svg>' # Placeholder, let's use a better one or just text if needed.
+        # Better scroll icon (continuous)
+        svg_scroll = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h16v2H4zm0 4h16v2H4zm0 4h16v2H4zm0 4h16v2H4z"/></svg>'
+        svg_wrapped = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>'
         
         btn_style = """
             QPushButton {
@@ -318,6 +323,30 @@ class MainWindow(QMainWindow):
             }
         """)
         controls_layout.addWidget(self.clef_selector)
+        
+        controls_layout.addSpacing(8)
+
+        # View Mode Button
+        self.icon_page = create_svg_icon(svg_page)
+        self.icon_scroll = create_svg_icon(svg_scroll)
+        self.icon_wrapped = create_svg_icon(svg_wrapped)
+        
+        self.btn_view_mode = QPushButton()
+        current_view_mode = self.settings.get("view_mode", "paging")
+        if current_view_mode == "scrolling":
+            self.btn_view_mode.setIcon(self.icon_scroll)
+            self.btn_view_mode.setToolTip("View: Scrolling (Click to switch to A4/Wrapped)")
+        elif current_view_mode == "wrapped":
+            self.btn_view_mode.setIcon(self.icon_wrapped)
+            self.btn_view_mode.setToolTip("View: A4/Wrapped (Click to switch to Paging)")
+        else:
+            self.btn_view_mode.setIcon(self.icon_page)
+            self.btn_view_mode.setToolTip("View: Paging (Click to switch to Scrolling)")
+            
+        self.btn_view_mode.setIconSize(QSize(18, 18))
+        self.btn_view_mode.clicked.connect(self.toggle_view_mode)
+        self.btn_view_mode.setStyleSheet(btn_style)
+        controls_layout.addWidget(self.btn_view_mode)
         
         controls_layout.addSpacing(8)
         
@@ -669,6 +698,14 @@ class MainWindow(QMainWindow):
             if hasattr(self.score_view, 'set_view_mode'):
                 view_mode = self.settings.get("view_mode", "paging")
                 self.score_view.set_view_mode(view_mode)
+                
+                # Update button icon
+                if view_mode == "scrolling":
+                    self.btn_view_mode.setIcon(self.icon_scroll)
+                    self.btn_view_mode.setToolTip("View: Scrolling (Click to switch to Paging)")
+                else:
+                    self.btn_view_mode.setIcon(self.icon_page)
+                    self.btn_view_mode.setToolTip("View: Paging (Click to switch to Scrolling)")
             
             self.score_view.update()
             
@@ -907,7 +944,7 @@ class MainWindow(QMainWindow):
         dialog.accept()
         
         # Update status
-        self.setWindowTitle(f"How To Piano - {mode} Mode")
+        self.setWindowTitle(f"How To Piano - {mode}")
         self.status_label.setText(f"Ready - {mode} Mode")
         
         # Note: User must press PLAY button to start - no automatic countdown
@@ -1129,6 +1166,36 @@ class MainWindow(QMainWindow):
             """)
             self.btn_midi.setToolTip(f"MIDI: {self.midi_device_name} - Click to select device")
     
+    def toggle_view_mode(self):
+        """Toggle between paging, scrolling, and wrapped view modes"""
+        current_mode = self.settings.get("view_mode", "paging")
+        
+        if current_mode == "paging":
+            new_mode = "scrolling"
+        elif current_mode == "scrolling":
+            new_mode = "wrapped"
+        else:
+            new_mode = "paging"
+        
+        self.settings["view_mode"] = new_mode
+        self.save_settings()
+        
+        if hasattr(self.score_view, 'set_view_mode'):
+            self.score_view.set_view_mode(new_mode)
+        
+        # Update button icon
+        if new_mode == "scrolling":
+            self.btn_view_mode.setIcon(self.icon_scroll)
+            self.btn_view_mode.setToolTip("View: Scrolling (Click to switch to A4/Wrapped)")
+        elif new_mode == "wrapped":
+            self.btn_view_mode.setIcon(self.icon_wrapped)
+            self.btn_view_mode.setToolTip("View: A4/Wrapped (Click to switch to Paging)")
+        else:
+            self.btn_view_mode.setIcon(self.icon_page)
+            self.btn_view_mode.setToolTip("View: Paging (Click to switch to Scrolling)")
+            
+        print(f"View mode changed to: {new_mode}")
+
     def change_sound(self, sound_name):
         # Map names to program numbers (General MIDI)
         sound_map = {
@@ -1526,7 +1593,7 @@ class MainWindow(QMainWindow):
             self.toggle_play()  # Restart in current mode
         else:
             # User clicked "Done"
-            self.training_manager.set_mode("Master")
+            self.training_manager.set_mode ("Master")
             self.mode_label.setText("🎹 Master")
             self.setWindowTitle("How To Piano")
     
@@ -2019,7 +2086,7 @@ class ArduinoConsoleDialog(QDialog):
                 border: none;
                 border-radius: 3px;
                 padding: 8px 16px;
-                font-size: 11px;
+                font-weight: bold;
             }
             QPushButton:hover {
                 background-color: #388bfd;

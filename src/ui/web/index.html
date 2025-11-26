@@ -48,6 +48,9 @@
             <div id="cursor" class="cursor"></div>
         </div>
     </div>
+    <div id="countdown-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; color: white; font-size: 100px; font-family: sans-serif;">
+        3
+    </div>
 
     <script>
         // Wait for VexFlow to load
@@ -66,6 +69,8 @@
             let staveTreble, staveBass;
             let noteDataMap = []; // Stores metadata like start_time for each note
             let activeNoteIndices = []; // Track currently highlighted notes (cursor replacement)
+            let lastNotesData = null;
+            let lastTempo = 120;
             
             // Initialize VexFlow
             function initVexFlow() {
@@ -115,11 +120,26 @@
             // Function called from Python to render notes
             // notesData: Array of {keys: ["c/4"], duration: "q", color: "black", pitch: 60, start_time: 0.0}
             window.renderNotes = function(notesData, tempo) {
+                lastNotesData = notesData;
+                lastTempo = tempo;
+                render();
+            }
+
+            function render() {
+                if (!lastNotesData) return;
+                if (viewMode === 'wrapped') {
+                    renderWrapped(lastNotesData, lastTempo);
+                } else {
+                    renderLinear(lastNotesData, lastTempo);
+                }
+            }
+
+            function renderLinear(notesData, tempo) {
                 initVexFlow();
                 noteDataMap = notesData.map(n => ({...n, baseColor: n.color || 'black'})); 
                 indexToNoteMap = {};
                 activeNoteIndices = [];
-                console.log("Rendering notes with tempo:", tempo);
+                console.log("Rendering Linear with tempo:", tempo);
                 
                 // Group notes by start_time to form chords
                 const groups = {};
@@ -144,19 +164,31 @@
 
                     // Use properties of the first note in group
                     const first = group[0];
-                    const keys = group.map(n => n.keys[0]); // Flatten keys
                     
-                    if (keys.length === 0) return;
+                    // Deduplicate keys to avoid double noteheads
+                    const uniqueKeys = [];
+                    const seenKeys = new Map(); // keyString -> keyIndex
+                    
+                    group.forEach(n => {
+                        const key = n.keys[0];
+                        if (!seenKeys.has(key)) {
+                            seenKeys.set(key, uniqueKeys.length);
+                            uniqueKeys.push(key);
+                        }
+                    });
+                    
+                    if (uniqueKeys.length === 0) return;
 
                     const note = new StaveNote({ 
-                        keys: keys, 
+                        keys: uniqueKeys, 
                         duration: first.duration,
                         auto_stem: true,
                         clef: "treble"
                     });
                     
                     // Map original indices to this note
-                    group.forEach((n, keyIdx) => {
+                    group.forEach(n => {
+                        const keyIdx = seenKeys.get(n.keys[0]);
                         indexToNoteMap[n.originalIndex] = { note: note, keyIndex: keyIdx };
                         
                         if (n.color) {
@@ -225,6 +257,250 @@
                 currentNotes = notes;
             }
 
+            function renderWrapped(notesData, tempo) {
+                initVexFlow();
+                noteDataMap = notesData.map(n => ({...n, baseColor: n.color || 'black'})); 
+                indexToNoteMap = {};
+                activeNoteIndices = [];
+                console.log("Rendering Wrapped with tempo:", tempo);
+                
+                // --- 1. PREPARE DATA (Same as renderLinear) ---
+                const groups = {};
+                noteDataMap.forEach((n, i) => {
+                    const time = n.start_time.toFixed(3);
+                    if (!groups[time]) groups[time] = [];
+                    groups[time].push({ ...n, originalIndex: i });
+                });
+                
+                const sortedTimes = Object.keys(groups).sort((a, b) => parseFloat(a) - parseFloat(b));
+                
+                const allData = []; // Linear list of {type: 'note'|'bar', ...}
+                let currentBeats = 0;
+                
+                sortedTimes.forEach(time => {
+                    const group = groups[time];
+                    group.sort((a, b) => a.pitch - b.pitch);
+                    
+                    const first = group[0];
+                    
+                    // Deduplicate keys
+                    const uniqueKeys = [];
+                    const keyMappings = []; // { originalIndex, keyIndex, color }
+                    const seenKeys = new Map(); // keyString -> keyIndex
+
+                    group.forEach(n => {
+                        const key = n.keys[0];
+                        let keyIndex;
+                        if (seenKeys.has(key)) {
+                            keyIndex = seenKeys.get(key);
+                        } else {
+                            keyIndex = uniqueKeys.length;
+                            uniqueKeys.push(key);
+                            seenKeys.set(key, keyIndex);
+                        }
+                        keyMappings.push({
+                            originalIndex: n.originalIndex,
+                            keyIndex: keyIndex,
+                            color: n.color
+                        });
+                    });
+
+                    if (uniqueKeys.length === 0) return;
+
+                    allData.push({
+                        type: 'note',
+                        keys: uniqueKeys,
+                        duration: first.duration,
+                        mappings: keyMappings
+                    });
+                    
+                    const durationMap = {
+                        "w": 4, "h": 2, "q": 1, "8": 0.5, "16": 0.25, "32": 0.125,
+                        "wr": 4, "hr": 2, "qr": 1, "8r": 0.5, "16r": 0.25, "32r": 0.125
+                    };
+                    let beats = durationMap[first.duration] || 1;
+                    if (first.duration.includes("d")) beats *= 1.5;
+                    
+                    currentBeats += beats;
+                    
+                    while (currentBeats >= 4) {
+                        allData.push({ type: 'bar' });
+                        currentBeats -= 4;
+                    }
+                });
+                
+                // --- 2. CHUNK INTO MEASURES ---
+                const measures = [];
+                let currentMeasure = [];
+                
+                allData.forEach(d => {
+                    if (d.type === 'bar') {
+                        // End of measure
+                        // We include the bar in the measure so it draws the line
+                        currentMeasure.push(d);
+                        measures.push(currentMeasure);
+                        currentMeasure = [];
+                    } else {
+                        currentMeasure.push(d);
+                    }
+                });
+                if (currentMeasure.length > 0) measures.push(currentMeasure);
+                
+                // --- 3. CALCULATE WIDTHS ---
+                // Helper to create voice from data
+                const createVoice = (data) => {
+                    const notes = data.map(d => {
+                        if (d.type === 'bar') return new BarNote();
+                        return new StaveNote({ 
+                            keys: d.keys, 
+                            duration: d.duration,
+                            auto_stem: true,
+                            clef: "treble"
+                        });
+                    });
+                    const v = new Voice({num_beats: 4, beat_value: 4});
+                    v.setStrict(false);
+                    v.addTickables(notes);
+                    return v;
+                };
+
+                const measureWidths = measures.map(m => {
+                    const v = createVoice(m);
+                    const formatter = new Formatter();
+                    return formatter.joinVoices([v]).preCalculateMinTotalWidth([v]) + 30; // +Padding
+                });
+                
+                // --- 4. LAYOUT SYSTEMS ---
+                const outputDiv = document.getElementById("output");
+                const a4WidthPx = outputDiv.clientWidth || 790; 
+                const availableWidth = a4WidthPx - 40; 
+                const systemStartPadding = 60; // Clef/TimeSig space
+                
+                const systems = [];
+                let currentSystem = [];
+                let currentSystemWidth = 0;
+                
+                measures.forEach((m, i) => {
+                    const minWidth = measureWidths[i];
+                    const isFirst = currentSystem.length === 0;
+                    const required = minWidth + (isFirst ? systemStartPadding : 0);
+                    
+                    if (currentSystemWidth + required > availableWidth && currentSystem.length > 0) {
+                        systems.push(currentSystem);
+                        currentSystem = [];
+                        currentSystemWidth = 0;
+                    }
+                    
+                    currentSystem.push({ data: m, minWidth: minWidth });
+                    currentSystemWidth += minWidth + (currentSystem.length === 1 ? systemStartPadding : 0);
+                });
+                if (currentSystem.length > 0) systems.push(currentSystem);
+                
+                // --- 5. RENDER ---
+                const container = document.getElementById("canvas-container");
+                container.style.overflowX = "hidden";
+                container.style.overflowY = "auto";
+                
+                let y = 40;
+                renderer.resize(a4WidthPx, Math.max(2000, y + (systems.length * 260) + 100));
+                
+                systems.forEach(system => {
+                    let x = 20;
+                    // Distribute extra space
+                    const sysMinWidth = system.reduce((sum, m, i) => sum + m.minWidth + (i===0 ? systemStartPadding : 0), 0);
+                    const extra = Math.max(0, availableWidth - sysMinWidth);
+                    const extraPerMeasure = extra / system.length;
+                    
+                    system.forEach((m, i) => {
+                        const isFirst = i === 0;
+                        const width = m.minWidth + (isFirst ? systemStartPadding : 0) + extraPerMeasure;
+                        
+                        // Treble Stave
+                        const staveTreble = new Stave(x, y, width);
+                        if (isFirst) {
+                            staveTreble.addClef("treble").addTimeSignature("4/4");
+                        }
+                        staveTreble.setContext(context).draw();
+                        
+                        // Bass Stave
+                        const staveBass = new Stave(x, y + 110, width);
+                        if (isFirst) {
+                            staveBass.addClef("bass").addTimeSignature("4/4");
+                        }
+                        staveBass.setContext(context).draw();
+                        
+                        // Connectors
+                        if (isFirst) {
+                            new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.BRACE).setContext(context).draw();
+                            new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_LEFT).setContext(context).draw();
+                        }
+                        new StaveConnector(staveTreble, staveBass).setType(StaveConnector.type.SINGLE_RIGHT).setContext(context).draw();
+
+                        // Voices
+                        const trebleNotes = [];
+                        const bassNotes = [];
+                        
+                        m.data.forEach(d => {
+                            if (d.type === 'bar') {
+                                trebleNotes.push(new BarNote());
+                                bassNotes.push(new BarNote());
+                            } else {
+                                const note = new StaveNote({ 
+                                    keys: d.keys, 
+                                    duration: d.duration,
+                                    auto_stem: true,
+                                    clef: "treble"
+                                });
+                                
+                                if (d.mappings) {
+                                    d.mappings.forEach(mapping => {
+                                        indexToNoteMap[mapping.originalIndex] = { note: note, keyIndex: mapping.keyIndex };
+                                        if (mapping.color) {
+                                            note.setKeyStyle(mapping.keyIndex, {fillStyle: mapping.color, strokeStyle: mapping.color});
+                                        }
+                                    });
+                                } else if (d.indices) {
+                                    // Fallback for legacy data structure if any
+                                    d.indices.forEach((oidx, kIdx) => {
+                                        indexToNoteMap[oidx] = { note: note, keyIndex: kIdx };
+                                        if (d.colors && d.colors[kIdx]) {
+                                            note.setKeyStyle(kIdx, {fillStyle: d.colors[kIdx], strokeStyle: d.colors[kIdx]});
+                                        }
+                                    });
+                                }
+
+                                trebleNotes.push(note);
+                                bassNotes.push(new GhostNote({ keys: ["c/3"], duration: d.duration }));
+                            }
+                        });
+                        
+                        const voice = new Voice({num_beats: 4, beat_value: 4});
+                        voice.setStrict(false);
+                        voice.addTickables(trebleNotes);
+                        
+                        const bassVoice = new Voice({num_beats: 4, beat_value: 4});
+                        bassVoice.setStrict(false);
+                        bassVoice.addTickables(bassNotes);
+                        
+                        new Formatter().joinVoices([voice, bassVoice]).format([voice, bassVoice], width - (isFirst ? systemStartPadding : 10));
+                        
+                        // Generate beams BEFORE drawing voice so flags are hidden
+                        const staveNotesOnly = trebleNotes.filter(n => n instanceof StaveNote);
+                        const beams = Beam.generateBeams(staveNotesOnly);
+                        
+                        voice.draw(context, staveTreble);
+                        bassVoice.draw(context, staveBass);
+                        
+                        beams.forEach(b => b.setContext(context).draw());
+                        
+                        x += width;
+                    });
+                    y += 260;
+                });
+                
+                renderer.resize(a4WidthPx, y + 100);
+            }
+
             // Highlight a specific note by index (called from Python for feedback)
             window.highlightNote = function(index, color) {
                 if (noteDataMap[index]) {
@@ -290,6 +566,55 @@
             window.setViewMode = function(mode) {
                 viewMode = mode;
                 console.log("View mode set to:", mode);
+                
+                const container = document.getElementById("canvas-container");
+                const output = document.getElementById("output");
+                const wrapper = document.getElementById("score-wrapper");
+
+                if (mode === 'wrapped') {
+                    container.style.overflowX = "hidden";
+                    container.style.overflowY = "auto";
+                    
+                    // A4 Style
+                    output.style.width = "210mm"; 
+                    output.style.margin = "0 auto";
+                    output.style.backgroundColor = "white";
+                    output.style.boxShadow = "0 0 10px rgba(0,0,0,0.1)";
+                    output.style.minHeight = "100%";
+                    
+                    // Reset wrapper
+                    wrapper.style.top = "0";
+                    wrapper.style.transform = "none";
+                    wrapper.style.display = "block";
+                    wrapper.style.width = "100%";
+                    wrapper.style.textAlign = "center";
+                    
+                } else {
+                    container.style.overflowX = "auto";
+                    container.style.overflowY = "hidden";
+                    container.scrollTop = 0;
+                    
+                    // Reset to default
+                    output.style.width = "auto";
+                    output.style.margin = "0";
+                    output.style.boxShadow = "none";
+                    output.style.backgroundColor = "transparent";
+                    
+                    // Restore wrapper
+                    wrapper.style.top = "50%";
+                    wrapper.style.transform = "translateY(-50%)";
+                    wrapper.style.display = "inline-block";
+                    wrapper.style.width = "auto";
+                    wrapper.style.textAlign = "left";
+                }
+
+                if (typeof render === 'function') render();
+            }
+
+            window.setZoom = function(zoom) {
+                currentZoom = zoom;
+                // For now, zoom only affects scroll calculation in paging/scrolling
+                // To implement visual zoom, we would need to scale the SVG or container
             }
 
             window.play = function() {
@@ -304,29 +629,46 @@
                 cancelAnimationFrame(animationFrameId);
             }
 
-            function updateScroll(cursorX) {
+            function updateScroll(pos) {
                 const container = document.getElementById("canvas-container");
                 
-                if (viewMode === 'paging') {
-                    // Page View: Flip pages
-                    const pageWidth = container.clientWidth;
-                    const pageIndex = Math.floor((cursorX * currentZoom) / pageWidth);
-                    const targetScroll = pageIndex * pageWidth;
+                if (viewMode === 'wrapped') {
+                    // Vertical scrolling
+                    const containerHeight = container.clientHeight;
+                    // Center the current system vertically
+                    // pos.y is the top of the system. We want it centered.
+                    // System height is approx 200px.
+                    const targetScroll = pos.y - (containerHeight / 2) + 100;
                     
-                    // Only scroll if we need to change page
+                    // Smooth scroll "poco a poco"
+                    const currentScroll = container.scrollTop;
+                    const diff = targetScroll - currentScroll;
+                    
+                    // If difference is very large (e.g. seek/reset), jump immediately
+                    if (Math.abs(diff) > 1000) {
+                        container.scrollTop = targetScroll;
+                    } else if (Math.abs(diff) > 1) {
+                        // Smooth easing (5% per frame)
+                        container.scrollTop = currentScroll + (diff * 0.05);
+                    }
+                } else if (viewMode === 'paging') {
+                    const pageWidth = container.clientWidth;
+                    const pageIndex = Math.floor((pos.x * currentZoom) / pageWidth);
+                    const targetScroll = pageIndex * pageWidth;
                     if (Math.abs(container.scrollLeft - targetScroll) > 5) {
                         container.scrollLeft = targetScroll;
                     }
+                    container.scrollTop = 0;
                 } else {
-                    // Scrolling View: Continuous smooth scroll
+                    // Scrolling
                     const halfWidth = container.clientWidth / 2;
-                    const targetScroll = (cursorX * currentZoom) - halfWidth;
-                    
+                    const targetScroll = (pos.x * currentZoom) - halfWidth;
                     if (targetScroll >= 0) {
                         container.scrollLeft = targetScroll;
                     } else {
                         container.scrollLeft = 0;
                     }
+                    container.scrollTop = 0;
                 }
             }
 
@@ -334,44 +676,34 @@
                 if (!isPlaying) return;
                 
                 const now = performance.now();
-                const deltaTime = (now - lastServerTimestamp) / 1000; // seconds
+                const deltaTime = (now - lastServerTimestamp) / 1000;
                 const estimatedTime = lastServerTime + deltaTime;
                 
                 highlightActiveNotes(estimatedTime);
                 
-                // Update scroll based on time
-                const cursorX = calculateXForTime(estimatedTime);
-                updateScroll(cursorX);
+                const pos = calculatePositionForTime(estimatedTime);
+                updateScroll(pos);
                 
                 animationFrameId = requestAnimationFrame(loop);
             }
 
-            // Update cursor based on time (called from Python)
             window.updateCursor = function(time) {
                 lastServerTime = time;
                 lastServerTimestamp = performance.now();
                 
-                // If not playing, render immediately (scrubbing)
                 if (!isPlaying) {
                     highlightActiveNotes(time);
-                    
-                    // Also update scroll position when scrubbing
-                    const cursorX = calculateXForTime(time);
-                    updateScroll(cursorX);
+                    const pos = calculatePositionForTime(time);
+                    updateScroll(pos);
                 }
             }
             
             function highlightActiveNotes(time) {
                 let activeIndices = [];
-                
-                // Iterate all notes to update state
-                // Optimization: We could limit range, but for < 500 notes, full iteration is okay-ish.
-                // To optimize: keep track of last processed index?
-                
                 for(let i = 0; i < noteDataMap.length; i++) {
                     const noteData = noteDataMap[i];
                     const start = noteData.start_time;
-                    const end = start + (noteData.duration_sec || 0.5); // Fallback if missing
+                    const end = start + (noteData.duration_sec || 0.5);
                     
                     let newState = 'future';
                     if (time >= start && time < end) {
@@ -381,32 +713,26 @@
                         newState = 'past';
                     }
                     
-                    // Only update if state changed
                     if (noteData.currentState !== newState) {
                         noteData.currentState = newState;
-                        
                         if (newState === 'active') {
-                            _applyColorToNote(i, activeNoteColor); // Configurable Color
+                            _applyColorToNote(i, activeNoteColor);
                         } else if (newState === 'past') {
-                            _applyColorToNote(i, "#bdc3c7"); // Light Gray
+                            _applyColorToNote(i, "#bdc3c7");
                         } else {
-                            // Future -> Reset to base color (Black or Feedback Color)
                             _applyColorToNote(i, noteData.baseColor);
                         }
                     }
                 }
-                
                 activeNoteIndices = activeIndices;
                 
-                // Scroll logic moved to loop() for smoothness
                 if (time < 0.1) {
-                    // Reset scroll at start
                     document.getElementById("canvas-container").scrollLeft = 0;
+                    document.getElementById("canvas-container").scrollTop = 0;
                 }
             }
             
-            function calculateXForTime(time) {
-                // Find the note that is active at this time or the next one
+            function calculatePositionForTime(time) {
                 let prevNoteIndex = -1;
                 let nextNoteIndex = -1;
                 
@@ -419,54 +745,69 @@
                     }
                 }
                 
-                let x = 10; // Default start
+                let x = 10;
+                let y = 0;
                 
+                const getPos = (noteObj) => {
+                    if (!noteObj) return {x: 10, y: 0};
+                    const note = noteObj.note;
+                    let nx = 0;
+                    try {
+                        nx = note.getAbsoluteX();
+                    } catch(e) {
+                        console.warn("Error getting absolute X", e);
+                    }
+                    
+                    let ny = 0;
+                    try {
+                        const stave = note.getStave();
+                        if (stave) {
+                            if (typeof stave.getY === 'function') {
+                                ny = stave.getY();
+                            } else if (stave.y !== undefined) {
+                                ny = stave.y;
+                            }
+                        }
+                    } catch(e) {
+                        console.warn("Error getting stave Y", e);
+                    }
+                    return {x: nx, y: ny};
+                };
+
                 if (prevNoteIndex >= 0 && nextNoteIndex >= 0) {
-                    // Interpolate between notes
                     const prevNoteObj = indexToNoteMap[prevNoteIndex];
                     const nextNoteObj = indexToNoteMap[nextNoteIndex];
                     
                     if (prevNoteObj && nextNoteObj) {
-                        const prevNote = prevNoteObj.note;
-                        const nextNote = nextNoteObj.note;
-                        const prevTime = noteDataMap[prevNoteIndex].start_time;
-                        const nextTime = noteDataMap[nextNoteIndex].start_time;
+                        const p = getPos(prevNoteObj);
+                        const n = getPos(nextNoteObj);
                         
-                        const prevX = prevNote.getAbsoluteX();
-                        const nextX = nextNote.getAbsoluteX();
-                        
-                        // Linear interpolation
-                        if (nextTime > prevTime) {
-                            const ratio = (time - prevTime) / (nextTime - prevTime);
-                            x = prevX + (nextX - prevX) * ratio;
+                        if (Math.abs(p.y - n.y) > 50) {
+                             x = p.x;
+                             y = p.y;
                         } else {
-                            x = prevX; // Same time (chord), stick to position
+                            const prevTime = noteDataMap[prevNoteIndex].start_time;
+                            const nextTime = noteDataMap[nextNoteIndex].start_time;
+                            if (nextTime > prevTime) {
+                                const ratio = (time - prevTime) / (nextTime - prevTime);
+                                x = p.x + (n.x - p.x) * ratio;
+                                y = p.y;
+                            } else {
+                                x = p.x;
+                                y = p.y;
+                            }
                         }
                     }
-                    
                 } else if (prevNoteIndex >= 0) {
-                    // Past the last note
-                    const prevNoteObj = indexToNoteMap[prevNoteIndex];
-                    if (prevNoteObj) {
-                        const note = prevNoteObj.note;
-                        x = note.getAbsoluteX();
-                    }
+                    const p = getPos(indexToNoteMap[prevNoteIndex]);
+                    x = p.x;
+                    y = p.y;
                 } else if (nextNoteIndex >= 0) {
-                    // Before the first note
-                     const nextNoteObj = indexToNoteMap[nextNoteIndex];
-                     if (nextNoteObj) {
-                         const nextNote = nextNoteObj.note;
-                         const nextTime = noteDataMap[nextNoteIndex].start_time;
-                         const nextX = nextNote.getAbsoluteX();
-                         
-                         // Interpolate from 0 to first note
-                         if (nextTime > 0) {
-                             const ratio = time / nextTime;
-                             x = 10 + (nextX - 10) * ratio;
-                         }
-                     }
+                    const n = getPos(indexToNoteMap[nextNoteIndex]);
+                    x = n.x;
+                    y = n.y;
                 }
-                return x;
+                return {x, y};
             }
             
             // Set Active Note Color
@@ -484,6 +825,24 @@
                 });
                 activeNoteIndices = [];
                 document.getElementById("canvas-container").scrollLeft = 0;
+            }
+
+            // Countdown function
+            window.startCountdown = function(seconds) {
+                const overlay = document.getElementById('countdown-overlay');
+                overlay.style.display = 'flex';
+                let count = Math.ceil(seconds);
+                overlay.innerText = count;
+                
+                const interval = setInterval(() => {
+                    count--;
+                    if (count > 0) {
+                        overlay.innerText = count;
+                    } else {
+                        clearInterval(interval);
+                        overlay.style.display = 'none';
+                    }
+                }, 1000);
             }
 
             // Initial render

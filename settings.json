@@ -24,7 +24,7 @@
     255,
     0
   ],
-  "visual_zoom": 83,
+  "visual_zoom": 200,
   "playback_tempo": 100,
   "playback_speed": 100,
   "show_staff_note_colors": true,
@@ -33,5 +33,6 @@
   "led_brightness": 0,
   "led_color_mode": "Rainbow",
   "ledteacher_port": "COM1",
-  "ledteacher_baud": 115200
+  "ledteacher_baud": 115200,
+  "view_mode": "wrapped"
 }

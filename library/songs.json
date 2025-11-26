@@ -82,5 +82,17 @@
     "name": "Heart and Soul Piano Duet The Real Version.mid",
     "path": "library\\songs\\49cd22f66d0cdb24ea2358171ff7d0f2.mid",
     "svg_cached": false
+  },
+  {
+    "id": "dd49a05a824c2cfad0c5621cc3be3bc4",
+    "name": "AC_DC_-_Back_In_Black",
+    "path": "library\\songs\\dd49a05a824c2cfad0c5621cc3be3bc4.mid",
+    "svg_cached": false
+  },
+  {
+    "id": "e4d5e4fb894bbf26c5fc18f2036f871c",
+    "name": "Ludwig_van_Beethoven_-_Symphony_No.5_Mvt.1__Fate_",
+    "path": "library\\songs\\e4d5e4fb894bbf26c5fc18f2036f871c.mid",
+    "svg_cached": false
   }
 ]
