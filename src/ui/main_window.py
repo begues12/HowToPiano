@@ -1814,18 +1814,27 @@ class MainWindow(QMainWindow):
                     _, midi_note = cmd
                     off_commands.append(midi_note)
             
-            # Send all OFF commands first (to clear old notes)
-            for midi_note in off_commands:
+            # Send OFF commands - use BATCH_OFF for multiple, single OFF for one
+            if len(off_commands) > 1:
+                # BATCH_OFF for multiple notes - single show() in Arduino
+                notes_str = []
+                for midi_note in off_commands:
+                    actual_midi_note = midi_note
+                    if self.settings.get("led_index_reverse", False):
+                        actual_midi_note = 129 - midi_note
+                    notes_str.append(str(actual_midi_note))
+                
+                command = f"BATCH_OFF:{','.join(notes_str)}\n"
+                self.arduino_serial.write(command.encode('utf-8'))
+            elif len(off_commands) == 1:
+                # Single OFF
+                midi_note = off_commands[0]
                 actual_midi_note = midi_note
                 if self.settings.get("led_index_reverse", False):
                     actual_midi_note = 129 - midi_note
                 
                 command = f"OFF:{actual_midi_note}\n"
                 self.arduino_serial.write(command.encode('utf-8'))
-            
-            # Send FLUSH command to force Arduino to process pending OFF immediately
-            if off_commands:
-                self.arduino_serial.write(b"FLUSH\n")
             
             # Then send ON commands (batch if multiple, single if one)
             if len(on_commands) > 1:
