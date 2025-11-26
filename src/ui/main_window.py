@@ -1742,7 +1742,7 @@ class MainWindow(QMainWindow):
             "show_mistakes": True,
             "repeat_section": False,
             "practice_tempo": 75,
-            "baud_rate": 9600,
+            "baud_rate": 115200,
             "auto_reconnect": True,
             "played_note_color": [0, 120, 255],  # Electric blue default
             "visual_zoom": 100,  # Default 100% zoom
@@ -1797,15 +1797,15 @@ class MainWindow(QMainWindow):
         """Try to connect to Arduino on specified port"""
         try:
             print(f"    Opening {port}...")
-            ser = serial.Serial(port, 115200, timeout=0.1)
-            time.sleep(2)  # Wait for Arduino reset
+            ser = serial.Serial(port, 115200, timeout=0.5)
+            print(f"    Waiting for Arduino to initialize (3 seconds)...")
+            time.sleep(3)  # Wait longer for Arduino reset and startup animation
             
-            # Check if Arduino responds
-            if ser.in_waiting > 0:
-                response = ser.readline().decode('utf-8', errors='ignore').strip()
-                print(f"    Response: {response}")
-                
-                if response == "READY":
+            # Flush any startup animation messages
+            while ser.in_waiting > 0:
+                line = ser.readline().decode('utf-8', errors='ignore').strip()
+                print(f"    Arduino: {line}")
+                if "READY" in line:
                     print(f"    ✅ Arduino connected on {port}!")
                     self.arduino_serial = ser
                     self.arduino_connected = True
@@ -1813,15 +1813,38 @@ class MainWindow(QMainWindow):
                     return True
             
             # Send PING to check connection
-            ser.write(b"PING\\n")
-            time.sleep(0.1)
+            print(f"    Sending PING...")
+            ser.write(b"PING\n")
+            time.sleep(0.2)
+            
+            # Read multiple responses
+            attempts = 0
+            while attempts < 3:
+                if ser.in_waiting > 0:
+                    response = ser.readline().decode('utf-8', errors='ignore').strip()
+                    print(f"    Response: {response}")
+                    
+                    if "PONG" in response or "READY" in response:
+                        print(f"    ✅ Arduino connected on {port}!")
+                        self.arduino_serial = ser
+                        self.arduino_connected = True
+                        self.update_arduino_indicator()
+                        return True
+                
+                time.sleep(0.1)
+                attempts += 1
+            
+            # Try TEST command as final verification
+            print(f"    Trying TEST command...")
+            ser.write(b"TEST\n")
+            time.sleep(0.3)
             
             if ser.in_waiting > 0:
                 response = ser.readline().decode('utf-8', errors='ignore').strip()
                 print(f"    Response: {response}")
                 
-                if "PONG" in response or "READY" in response:
-                    print(f"    ✅ Arduino connected on {port}!")
+                if response:  # Any response means Arduino is working
+                    print(f"    ✅ Arduino connected on {port} (via TEST)!")
                     self.arduino_serial = ser
                     self.arduino_connected = True
                     self.update_arduino_indicator()
@@ -1878,7 +1901,7 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            command = f"ON:{midi_note}:{velocity}\\n"
+            command = f"ON:{midi_note}:{velocity}\n"
             self.arduino_serial.write(command.encode())
             
             # Log to console if open
@@ -1903,7 +1926,7 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            command = f"OFF:{midi_note}\\n"
+            command = f"OFF:{midi_note}\n"
             self.arduino_serial.write(command.encode())
             
             # Log to console if open

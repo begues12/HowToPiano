@@ -35,8 +35,10 @@ A Python application that acts as a piano teacher, connecting to an Arduino via 
    - Threaded input processing ensures zero lag
    - Supports all standard MIDI devices
    - Visual feedback with cyan color for MIDI input
-4. **Arduino** (Optional): Connect your Arduino. The default port is `COM3`. You can change this in the code or I can add a settings menu.
-   - Protocol: The Arduino should send `ON:note:velocity` and `OFF:note` strings over Serial at 9600 baud.
+4. **Arduino** (Optional): Connect your Arduino with WS2812B LED strip for visual piano key feedback.
+   - Baudrate: **115200** (fast USB communication)
+   - Auto-detection: The application automatically detects Arduino on startup
+   - **Protocol**: See [Arduino Communication Protocol](#arduino-communication-protocol) below
 
 ## Running
 ```bash
@@ -78,6 +80,50 @@ staff_widget.enable_sync_system()
 staff_widget.disable_sync_system()
 staff_widget.reset_sync_system()
 ```
+
+## Arduino Communication Protocol
+
+The application uses a fast, efficient serial protocol at **115200 baud** for real-time LED control of piano keys.
+
+### Python → Arduino Commands
+
+| Command | Format | Description | Example |
+|---------|--------|-------------|---------|
+| **LED ON** | `ON:note:brightness\n` | Turn on LED for a note | `ON:60:100\n` (Middle C, full brightness) |
+| **LED OFF** | `OFF:note\n` | Turn off LED for a note | `OFF:60\n` (Middle C off) |
+| **RGB Color** | `LED:note,r,g,b\n` | Set custom RGB color | `LED:60,255,0,0\n` (Red) |
+| **Batch Update** | `BATCH:n1,r,g,b;n2,r,g,b\n` | Update multiple LEDs at once | `BATCH:60,0,255,0;62,0,255,0\n` |
+| **Clear All** | `CLEAR\n` | Turn off all LEDs | `CLEAR\n` |
+| **Brightness** | `BRIGHTNESS:value\n` | Set global brightness (0-255) | `BRIGHTNESS:128\n` |
+| **Test** | `TEST\n` | Run test animation | `TEST\n` |
+| **Ping** | `PING\n` | Check connection | `PING\n` |
+
+### Arduino → Python Responses
+
+| Response | Format | Description | Example |
+|----------|--------|-------------|---------|
+| **Ready** | `READY\n` | Arduino initialized | `READY\n` |
+| **LED Feedback** | `LED ON: C4 (MIDI 60, LED index 39)\n` | Confirmation | - |
+| **Pong** | `PONG\n` | Response to PING | `PONG\n` |
+
+### MIDI Note Mapping
+- Piano range: MIDI notes **21-108** (A0 to C8, 88 keys)
+- LED index: `led_index = midi_note - 21` (0-87)
+- Example: Middle C (MIDI 60) → LED index 39
+
+### Performance Optimizations
+- **Batch commands** for updating multiple LEDs simultaneously
+- **FastLED library** with 120 Hz refresh rate
+- **No delays** in Arduino loop - instant USB response
+- **Buffer optimization** for smooth animations
+
+### Hardware Requirements
+- Arduino Uno/Nano/Mega
+- WS2812B LED strip (88 LEDs for full piano)
+- FastLED library installed
+- USB connection at 115200 baud
+
+See `arduino/ws2812b_piano_leds/ws2812b_piano_leds.ino` for the complete Arduino code.
 
 ---
 

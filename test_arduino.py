@@ -53,7 +53,7 @@ class ArduinoTester(QWidget):
         baud_layout.addWidget(QLabel("Baud Rate:"))
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
-        self.baud_combo.setCurrentText("9600")
+        self.baud_combo.setCurrentText("115200")
         baud_layout.addWidget(self.baud_combo)
         baud_layout.addStretch()
         conn_layout.addLayout(baud_layout)
@@ -173,13 +173,13 @@ class ArduinoTester(QWidget):
             with open("settings.json", "r") as f:
                 settings = json.load(f)
                 self.default_port = settings.get("port", "COM3")
-                self.default_baud = settings.get("baud_rate", 9600)
+                self.default_baud = settings.get("baud_rate", 115200)
                 self.baud_combo.setCurrentText(str(self.default_baud))
                 self.log(f"📂 Loaded settings: Port={self.default_port}, Baud={self.default_baud}")
         except Exception as e:
             self.log(f"⚠️ Could not load settings: {e}")
             self.default_port = "COM3"
-            self.default_baud = 9600
+            self.default_baud = 115200
     
     def refresh_ports(self):
         """Refresh available COM ports"""
