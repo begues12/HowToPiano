@@ -405,10 +405,11 @@ class StudentMode(TrainingMode):
 
 class PracticeMode(TrainingMode):
     """
-    PRACTICE MODE - Wait for User
-    - Notes light up when they should be played
-    - Playback pauses until user plays the correct notes
-    - Evaluates performance at the end
+    PRACTICE MODE - Listen then Play
+    - Splits song into chunks (e.g. 4 measures / 8 seconds)
+    - Phase 1 (LISTEN): Plays the chunk automatically
+    - Phase 2 (PLAY): Waits for user to play the chunk
+    - Advances to next chunk upon success
     """
     
     def __init__(self, midi_engine, staff_widget, piano_widget):
@@ -432,28 +433,31 @@ class PracticeMode(TrainingMode):
         self.error_highlights = set()  # Notes currently highlighted in red
         self.error_highlight_time = 0  # When error highlighting started
         
+        # Listen-Play Logic
+        self.state = 'LISTEN' # 'LISTEN' or 'PLAY'
+        self.chunks = []
+        self.current_chunk_index = 0
+        self.chunk_start_time = 0
+        self.chunk_end_time = 0
+        
     def start(self):
         """Start practice mode with evaluation"""
         self.is_active = True
         self.waiting_for.clear()
         self.active_notes.clear()
-        # Don't reset event index - continue from where we were
-        # self.current_event_index stays as it was
-        # Resume from paused position
-        self.start_time = time.time() - (self.paused_adjusted_time / self.tempo_multiplier)
-        # Clear any previous frozen state
-        if hasattr(self, 'frozen_adjusted_time'):
-            delattr(self, 'frozen_adjusted_time')
         
-        # Reset statistics only if starting from beginning
-        if self.current_event_index == 0:
-            self.mistakes.clear()
-            self.correct_notes = 0
-            self.total_notes = 0
-            self.session_start_time = time.time()
-            self.completed = False
+        # Generate chunks if not already done
+        self._generate_chunks()
         
-        self.mode_message.emit("📝 Practice Mode - Play the notes!")
+        # Reset statistics
+        self.mistakes.clear()
+        self.correct_notes = 0
+        self.total_notes = 0
+        self.session_start_time = time.time()
+        self.completed = False
+        
+        # Start first chunk
+        self._setup_chunk(0)
         
     def stop(self):
         """Stop practice mode and clean up"""
@@ -476,65 +480,118 @@ class PracticeMode(TrainingMode):
         self.active_notes.clear()
         
         # Save statistics and show results if we have played any notes
-        # Only show dialog if stopped manually (not if completed naturally)
         if self.total_notes > 0 and not self.completed:
             self._save_statistics()
             self._show_results_dialog()
-        elif self.total_notes == 0:
-            # If stopped without playing, just reset to beginning
-            self.current_event_index = 0
-            self.paused_adjusted_time = 0
-            self.playback_update.emit(-3.0)  # Reset to preparation time
         
         self.mode_message.emit("⏹ Stopped - Practice Mode")
         
-    def tick(self):
-        """Wait for user input before advancing"""
-        if not self.is_active:
-            print(f"[PRACTICE TICK] NOT ACTIVE - returning")
-            return
+    def _generate_chunks(self):
+        """Generate chunks based on time (e.g. 8 seconds)"""
+        if not self.midi_engine.events: return
+        last_event_time = self.midi_engine.events[-1]['time']
+        chunk_duration = 8.0 # 4 measures approx (assuming 120bpm 4/4)
         
-        # Calculate current time with tempo multiplier
+        self.chunks = []
+        t = 0
+        while t < last_event_time:
+            self.chunks.append((t, min(t + chunk_duration, last_event_time + 1.0)))
+            t += chunk_duration
+
+    def _setup_chunk(self, index):
+        """Setup the next chunk to practice"""
+        if index >= len(self.chunks):
+            self.is_active = False
+            self.completed = True
+            self._save_statistics()
+            self.mode_message.emit("✓ Practice finished! Evaluating...")
+            self._show_results_dialog()
+            self.finished.emit()
+            return
+            
+        self.current_chunk_index = index
+        start, end = self.chunks[index]
+        self.chunk_start_time = start
+        self.chunk_end_time = end
+        
+        # Start with LISTEN
+        self.state = 'LISTEN'
+        self.mode_message.emit(f"👂 Listen: Chunk {index + 1}/{len(self.chunks)}")
+        
+        # Seek to start
+        self._seek_to(start)
+
+    def _seek_to(self, time_sec):
+        """Seek to a specific time in the song"""
+        preparation_time = getattr(self.staff_widget, 'preparation_time', 3.0)
+        adjusted_time = time_sec + preparation_time
+        real_elapsed = adjusted_time / self.tempo_multiplier
+        self.start_time = time.time() - real_elapsed
+        
+        # Reset event index
+        self.current_event_index = 0
+        for i, evt in enumerate(self.midi_engine.events):
+            if evt['time'] >= time_sec:
+                self.current_event_index = i
+                break
+        
+        # Clear frozen state if any
+        if hasattr(self, 'frozen_adjusted_time'):
+            delattr(self, 'frozen_adjusted_time')
+
+    def tick(self):
+        """Main loop"""
+        if not self.is_active: return
+        
+        # Calculate times
         real_elapsed = time.time() - self.start_time
         adjusted_time = real_elapsed * self.tempo_multiplier
-        
-        # CRITICAL: Subtract preparation time (same as Master Mode)
-        # This ensures notes start off-screen and scroll to the red line
         preparation_time = getattr(self.staff_widget, 'preparation_time', 3.0)
-        adjusted_time -= preparation_time
+        song_time = adjusted_time - preparation_time
         
-
-        
-        # Clean up error highlights after 500ms
+        # Clean up error highlights
         if self.error_highlights and time.time() - self.error_highlight_time > 0.5:
             for note in list(self.error_highlights):
                 self.note_unhighlight.emit(note)
             self.error_highlights.clear()
-        
-        # If waiting for notes, freeze everything - don't update time
-        if self.waiting_for:
-            self.mode_message.emit(f"⏸ Waiting for {len(self.waiting_for)} note(s)...")
-            # Store the frozen time to resume later (only once)
-            if not hasattr(self, 'frozen_adjusted_time'):
-                self.frozen_adjusted_time = adjusted_time
-                self.playback_update.emit(adjusted_time)  # Update once at freeze point
-                print(f"[PRACTICE] ⏸ FROZEN at time {adjusted_time:.2f}s, waiting for {len(self.waiting_for)} notes: {list(self.waiting_for)}")
-            # Keep resetting start_time to maintain frozen position
-            # Add preparation_time back when calculating start_time
-            self.start_time = time.time() - ((self.frozen_adjusted_time + preparation_time) / self.tempo_multiplier)
-            return
-        
-        # If we just resumed from waiting, clean up
-        if hasattr(self, 'frozen_adjusted_time'):
-            print(f"[PRACTICE] ▶ RESUMED from frozen state, continuing from time {adjusted_time:.2f}s")
-            delattr(self, 'frozen_adjusted_time')
-            self.mode_message.emit("▶ Resuming...")
-        
-        # Update staff position first (always update when not frozen)
-        self.playback_update.emit(adjusted_time)
-        
-        # Then process events to check if we need to freeze on next tick
-        self._process_events(adjusted_time)
+
+        if self.state == 'LISTEN':
+            # Check end of chunk
+            if song_time >= self.chunk_end_time:
+                self.state = 'PLAY'
+                self.mode_message.emit(f"🎹 Your turn! Chunk {self.current_chunk_index + 1}")
+                self._seek_to(self.chunk_start_time)
+                self.waiting_for.clear()
+                return
+            
+            # Normal playback
+            self.playback_update.emit(adjusted_time)
+            
+        elif self.state == 'PLAY':
+            # Check end of chunk (if user played everything)
+            if song_time >= self.chunk_end_time:
+                self.mode_message.emit("✓ Good job!")
+                # Move to next chunk
+                self._setup_chunk(self.current_chunk_index + 1)
+                return
+
+            # Wait for User Logic
+            if self.waiting_for:
+                self.mode_message.emit(f"⏸ Waiting for {len(self.waiting_for)} note(s)...")
+                if not hasattr(self, 'frozen_adjusted_time'):
+                    self.frozen_adjusted_time = adjusted_time
+                    self.playback_update.emit(adjusted_time)
+                
+                # Keep resetting start_time
+                self.start_time = time.time() - (self.frozen_adjusted_time / self.tempo_multiplier)
+                return
+            
+            if hasattr(self, 'frozen_adjusted_time'):
+                delattr(self, 'frozen_adjusted_time')
+                self.mode_message.emit("▶ Resuming...")
+            
+            self.playback_update.emit(adjusted_time)
+            self._process_events(song_time)
         
     def _process_events(self, current_time):
         """Process MIDI events and light up notes (including chords)"""
@@ -587,15 +644,6 @@ class PracticeMode(TrainingMode):
             else:
                 # Skip non-note-on events (note_off, etc.)
                 self.current_event_index += 1
-        
-        # Check if song finished
-        if self.current_event_index >= len(events) and not self.waiting_for:
-            self.is_active = False
-            self.completed = True  # Mark as completed
-            self._save_statistics()  # Save stats before finishing
-            self.mode_message.emit("✓ Practice finished! Evaluating...")
-            self._show_results_dialog()  # Show results dialog once
-            self.finished.emit()  # Notify that song finished
     
     def on_user_note_press(self, note, velocity):
         """User presses a key"""

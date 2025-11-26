@@ -37,6 +37,25 @@
         .cursor {
             display: none !important;
         }
+        
+        @keyframes humo {
+            0% {
+                transform: rotate(0deg) translateY(0);
+                opacity: 1;
+                filter: blur(0px);
+            }
+            100% {
+                transform: rotate(45deg) translateY(-50px); /* Adjusted for SVG scale */
+                opacity: 0;
+                filter: blur(4px); /* Reduced blur for performance */
+            }
+        }
+        
+        .smoke-effect {
+            animation: humo 1s linear forwards;
+            transform-box: fill-box;
+            transform-origin: center;
+        }
     </style>
     <!-- Load VexFlow from local file -->
     <script src="vexflow.js"></script>
@@ -71,11 +90,13 @@
             let activeNoteIndices = []; // Track currently highlighted notes (cursor replacement)
             let lastNotesData = null;
             let lastTempo = 120;
+            let beamsList = []; // Store beam info for visual effects
             
             // Initialize VexFlow
             function initVexFlow() {
                 const div = document.getElementById("output");
                 div.innerHTML = ""; // Clear previous
+                beamsList = []; // Clear beams list
                 
                 renderer = new Renderer(div, Renderer.Backends.SVG);
                 
@@ -187,14 +208,17 @@
                     });
                     
                     // Map original indices to this note
+                    const myIndices = [];
                     group.forEach(n => {
                         const keyIdx = seenKeys.get(n.keys[0]);
                         indexToNoteMap[n.originalIndex] = { note: note, keyIndex: keyIdx };
+                        myIndices.push(n.originalIndex);
                         
                         if (n.color) {
                             note.setKeyStyle(keyIdx, {fillStyle: n.color, strokeStyle: n.color});
                         }
                     });
+                    note.myIndices = myIndices;
                     
                     notes.push(note);
                     
@@ -252,7 +276,21 @@
 
                 voice.draw(context, staveTreble);
                 bassVoice.draw(context, staveBass);
-                beams.forEach(b => b.setContext(context).draw());
+                
+                beams.forEach((b, i) => {
+                    context.openGroup("vf-beam-" + i);
+                    b.setContext(context).draw();
+                    context.closeGroup();
+                    
+                    const beamIndices = [];
+                    b.notes.forEach(n => {
+                        if (n.myIndices) beamIndices.push(...n.myIndices);
+                    });
+                    beamsList.push({
+                        className: "vf-beam-" + i,
+                        noteIndices: beamIndices
+                    });
+                });
                 
                 currentNotes = notes;
             }
@@ -404,7 +442,7 @@
                 let y = 40;
                 renderer.resize(a4WidthPx, Math.max(2000, y + (systems.length * 260) + 100));
                 
-                systems.forEach(system => {
+                systems.forEach((system, sysIdx) => {
                     let x = 20;
                     // Distribute extra space
                     const sysMinWidth = system.reduce((sum, m, i) => sum + m.minWidth + (i===0 ? systemStartPadding : 0), 0);
@@ -453,14 +491,18 @@
                                 });
                                 
                                 if (d.mappings) {
+                                    const myIndices = [];
                                     d.mappings.forEach(mapping => {
                                         indexToNoteMap[mapping.originalIndex] = { note: note, keyIndex: mapping.keyIndex };
+                                        myIndices.push(mapping.originalIndex);
                                         if (mapping.color) {
                                             note.setKeyStyle(mapping.keyIndex, {fillStyle: mapping.color, strokeStyle: mapping.color});
                                         }
                                     });
+                                    note.myIndices = myIndices;
                                 } else if (d.indices) {
                                     // Fallback for legacy data structure if any
+                                    note.myIndices = d.indices;
                                     d.indices.forEach((oidx, kIdx) => {
                                         indexToNoteMap[oidx] = { note: note, keyIndex: kIdx };
                                         if (d.colors && d.colors[kIdx]) {
@@ -491,7 +533,22 @@
                         voice.draw(context, staveTreble);
                         bassVoice.draw(context, staveBass);
                         
-                        beams.forEach(b => b.setContext(context).draw());
+                        beams.forEach((b, beamIdx) => {
+                            // Unique class name per system/measure/beam
+                            const beamClass = "vf-beam-" + sysIdx + "-" + i + "-" + beamIdx;
+                            context.openGroup(beamClass);
+                            b.setContext(context).draw();
+                            context.closeGroup();
+                            
+                            const beamIndices = [];
+                            b.notes.forEach(n => {
+                                if (n.myIndices) beamIndices.push(...n.myIndices);
+                            });
+                            beamsList.push({
+                                className: beamClass,
+                                noteIndices: beamIndices
+                            });
+                        });
                         
                         x += width;
                     });
@@ -562,6 +619,12 @@
             let animationFrameId;
             let currentZoom = 1.0;
             let viewMode = 'paging'; // 'scrolling' or 'paging'
+
+            window.visualEffectsEnabled = true;
+            window.setVisualEffects = function(enabled) {
+                window.visualEffectsEnabled = enabled;
+                console.log("Visual effects set to:", enabled);
+            }
 
             window.setViewMode = function(mode) {
                 viewMode = mode;
@@ -722,6 +785,7 @@
                         } else {
                             _applyColorToNote(i, noteData.baseColor);
                         }
+                        _applyVisualEffect(i, newState);
                     }
                 }
                 activeNoteIndices = activeIndices;
@@ -730,6 +794,50 @@
                     document.getElementById("canvas-container").scrollLeft = 0;
                     document.getElementById("canvas-container").scrollTop = 0;
                 }
+            }
+            
+            function _applyVisualEffect(index, state) {
+                if (!window.visualEffectsEnabled) return;
+                
+                if (indexToNoteMap[index]) {
+                    const { note, keyIndex } = indexToNoteMap[index];
+                    const group = note.getAttribute("el");
+                    if (group) {
+                        if (state === 'past') {
+                            group.classList.add('smoke-effect');
+                        } else {
+                            group.classList.remove('smoke-effect');
+                        }
+                    }
+                }
+                
+                // Check beams
+                beamsList.forEach(beamData => {
+                    // Check if this beam contains the updated note index
+                    if (beamData.noteIndices.includes(index)) {
+                        const allPast = beamData.noteIndices.every(idx => {
+                            const n = noteDataMap[idx];
+                            return n && n.currentState === 'past';
+                        });
+                        
+                        const beamGroup = document.getElementsByClassName(beamData.className)[0];
+                        if (beamGroup) {
+                            if (allPast) {
+                                beamGroup.classList.add('smoke-effect');
+                                // Also ensure all child paths have the effect or inherit it
+                                // Sometimes SVG groups don't propagate opacity/filter to children correctly in all browsers
+                                // but usually they do.
+                            } else {
+                                beamGroup.classList.remove('smoke-effect');
+                            }
+                        } else {
+                            // Fallback: try to find by ID if class failed (VexFlow quirk?)
+                            // Or maybe the group wasn't created with class.
+                            // Let's try to find the beam by inspecting the DOM if needed, but for now assume class works.
+                            // console.warn("Beam group not found:", beamData.className);
+                        }
+                    }
+                });
             }
             
             function calculatePositionForTime(time) {

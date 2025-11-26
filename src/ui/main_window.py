@@ -1468,7 +1468,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'training_manager'):
             mode_name = self.training_manager.get_current_mode_name()
             if mode_name == 'Practice':
-                should_play = False
+                # Only play audio in LISTEN state
+                current_mode = self.training_manager.current_mode
+                if hasattr(current_mode, 'state') and current_mode.state == 'LISTEN':
+                    should_play = True
+                else:
+                    should_play = False
         
         # If MidiEngine is playing, it handles audio. We only want visual feedback.
         if self.midi_engine.is_playing:
@@ -1484,7 +1489,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'training_manager'):
             mode_name = self.training_manager.get_current_mode_name()
             if mode_name == 'Practice':
-                should_stop = False  # User controls when to stop
+                # Allow stop in LISTEN state
+                current_mode = self.training_manager.current_mode
+                if hasattr(current_mode, 'state') and current_mode.state == 'LISTEN':
+                    should_stop = True
+                else:
+                    should_stop = False  # User controls when to stop
         
         self._deactivate_piano_key(pitch, stop_audio=should_stop)
     
