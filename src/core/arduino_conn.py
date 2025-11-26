@@ -1,30 +1,31 @@
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex
 import serial
 import time
-import struct
 
 class ArduinoWorker(QObject):
     """
-    Binary protocol Arduino worker - NO RESPONSES, MAXIMUM SPEED
+    Text protocol Arduino worker with RGB color support
     
-    Protocol: 5 bytes per LED command
-    [note_number][state][R][G][B]
-    
-    Multiple LEDs can be sent in one packet for batch updates
+    Protocol: Text commands (newline terminated)
+    - "ON:note:brightness\n" - Default green with brightness (0-100)
+    - "LED:note,r,g,b\n" - RGB color (0-255 each)
+    - "OFF:note\n" - Turn off LED
+    - "BATCH:note1,r,g,b;note2,r,g,b\n" - Multiple LEDs at once
+    - "CLEAR\n" - Turn off all
+    - "BRIGHTNESS:value\n" - Global brightness (0-255)
     """
     note_on = pyqtSignal(int, int) # note, velocity (for physical piano input)
     note_off = pyqtSignal(int)     # note (for physical piano input)
     connection_status = pyqtSignal(bool, str)
 
-    def __init__(self, port="COM3", baudrate=500000, mock=False):
+    def __init__(self, port="COM3", baudrate=115200, mock=False):
         super().__init__()
         self.port = port
-        self.baudrate = baudrate  # 500000 baud for maximum speed
+        self.baudrate = baudrate  # 115200 baud (standard fast USB)
         self.mock = mock
         self.running = False
         self.serial = None
         self.write_mutex = QMutex()  # Thread-safe writing
-        self.command_buffer = []     # Buffer for batch commands
 
     def run(self):
         self.running = True
@@ -35,28 +36,28 @@ class ArduinoWorker(QObject):
                     self.port, 
                     self.baudrate, 
                     timeout=0.1,
-                    write_timeout=0.1  # Non-blocking writes
+                    write_timeout=0.1
                 )
-                print(f"⏳ Waiting for Arduino initialization (1 second)...")
-                time.sleep(1)  # Quick startup
+                print(f"⏳ Waiting for Arduino initialization...")
+                time.sleep(1.5)  # Wait for Arduino startup
                 
-                # Wait for ready byte (0xFF)
+                # Wait for "READY" message
                 start_time = time.time()
                 ready = False
                 
                 while time.time() - start_time < 3:  # 3 second timeout
                     if self.serial.in_waiting > 0:
-                        byte = self.serial.read(1)
-                        if byte == b'\xFF':
+                        line = self.serial.readline().decode('utf-8', errors='ignore').strip()
+                        if line == "READY":
                             ready = True
-                            print(f"✅ Arduino READY on {self.port} (binary protocol)")
+                            print(f"✅ Arduino READY on {self.port} (text protocol)")
                             break
                     time.sleep(0.1)
                 
                 if ready:
                     self.connection_status.emit(True, f"Connected to {self.port}")
                 else:
-                    print(f"⚠️ Connected to {self.port} but no ready signal (continuing anyway)")
+                    print(f"⚠️ Connected to {self.port} but no READY signal (continuing anyway)")
                     self.connection_status.emit(True, f"Connected to {self.port}")
                     
             except Exception as e:
@@ -67,105 +68,115 @@ class ArduinoWorker(QObject):
         else:
             self.connection_status.emit(True, "Mock Mode")
 
-        # Main loop - NO READING, only for keep-alive
+        # Main loop - minimal overhead
         while self.running:
             QThread.msleep(100)
 
-    def _write_binary(self, data):
-        """Internal method to write binary data - thread-safe, immediate flush"""
+    def _write_text(self, command):
+        """Internal method to write text command - thread-safe, immediate flush"""
         if not self.serial or not self.serial.is_open or self.mock:
             return
         
         self.write_mutex.lock()
         try:
-            self.serial.write(data)
-            self.serial.flush()  # Force immediate send for real-time response
+            self.serial.write(command.encode('utf-8'))
+            self.serial.flush()  # Force immediate send
         except Exception as e:
             print(f"Arduino write error: {e}")
         finally:
             self.write_mutex.unlock()
 
-    def send_note_on(self, note, r=0, g=255, b=0):
-        """Send LED ON command - BINARY, NO RESPONSE
+    def send_note_on(self, note, brightness=100, r=None, g=None, b=None):
+        """Send LED ON command with optional RGB color
         
         Args:
             note: MIDI note number (21-108)
-            r, g, b: RGB color (0-255)
+            brightness: Brightness 0-100 (used if RGB not specified)
+            r, g, b: Optional RGB color (0-255). If specified, uses LED: command
+        
+        Examples:
+            send_note_on(60, 100) -> "ON:60:100\n" (green at full brightness)
+            send_note_on(60, r=255, g=0, b=0) -> "LED:60,255,0,0\n" (red)
         """
-        led_index = note - 21  # Convert MIDI to LED index
-        if 0 <= led_index < 88:
-            packet = bytes([led_index, 1, r, g, b])  # state=1 (ON)
-            self._write_binary(packet)
+        if 21 <= note <= 108:
+            if r is not None and g is not None and b is not None:
+                # RGB color specified - use LED: command
+                command = f"LED:{note},{r},{g},{b}\n"
+            else:
+                # Use default green with brightness
+                command = f"ON:{note}:{brightness}\n"
+            self._write_text(command)
 
     def send_note_off(self, note):
-        """Send LED OFF command - BINARY, NO RESPONSE
+        """Send LED OFF command
         
         Args:
             note: MIDI note number (21-108)
         """
-        led_index = note - 21
-        if 0 <= led_index < 88:
-            packet = bytes([led_index, 0, 0, 0, 0])  # state=0 (OFF)
-            self._write_binary(packet)
+        if 21 <= note <= 108:
+            command = f"OFF:{note}\n"
+            self._write_text(command)
 
     def send_led_rgb(self, note, r, g, b):
-        """Send LED with specific RGB color - BINARY, NO RESPONSE
+        """Send LED with specific RGB color
         
         Args:
             note: MIDI note number (21-108)
             r, g, b: RGB values (0-255)
         """
-        led_index = note - 21
-        if 0 <= led_index < 88:
-            packet = bytes([led_index, 1, r, g, b])
-            self._write_binary(packet)
+        if 21 <= note <= 108:
+            command = f"LED:{note},{r},{g},{b}\n"
+            self._write_text(command)
 
     def send_batch_leds(self, led_data):
-        """Send multiple LEDs in ONE packet - MAXIMUM SPEED
+        """Send multiple LEDs in ONE command - MAXIMUM SPEED
         
         Args:
-            led_data: List of tuples (note, r, g, b) or (note, state, r, g, b)
+            led_data: List of tuples (note, r, g, b)
+        
+        Example:
+            send_batch_leds([(60, 255, 0, 0), (62, 0, 255, 0), (64, 0, 0, 255)])
+            -> "BATCH:60,255,0,0;62,0,255,0;64,0,0,255\n"
         """
         if not led_data:
             return
         
-        # Build multi-LED packet
-        packet = bytearray()
+        # Build batch command
+        parts = []
         for item in led_data:
             if len(item) == 4:
                 note, r, g, b = item
-                state = 1  # ON
-            elif len(item) == 5:
-                note, state, r, g, b = item
-            else:
-                continue
-            
-            led_index = note - 21
-            if 0 <= led_index < 88:
-                packet.extend([led_index, state, r, g, b])
+                if 21 <= note <= 108:
+                    parts.append(f"{note},{r},{g},{b}")
         
-        if packet:
-            self._write_binary(bytes(packet))
+        if parts:
+            command = "BATCH:" + ";".join(parts) + "\n"
+            self._write_text(command)
 
     def clear_all_leds(self):
-        """Turn off all LEDs - BINARY COMMAND"""
-        packet = bytes([255, 0, 0, 0, 0])  # Special command: CLEAR
-        self._write_binary(packet)
+        """Turn off all LEDs"""
+        command = "CLEAR\n"
+        self._write_text(command)
 
     def set_brightness(self, brightness):
-        """Set global LED brightness - BINARY COMMAND
+        """Set global LED brightness
         
         Args:
             brightness: 0-255
         """
         brightness = max(0, min(255, brightness))
-        packet = bytes([255, 1, brightness, 0, 0])  # Special command: BRIGHTNESS
-        self._write_binary(packet)
+        command = f"BRIGHTNESS:{brightness}\n"
+        self._write_text(command)
 
     def test_leds(self):
-        """Run test animation - BINARY COMMAND"""
-        packet = bytes([255, 2, 0, 0, 0])  # Special command: TEST
-        self._write_binary(packet)
+        """Run test animation"""
+        command = "TEST\n"
+        self._write_text(command)
+    
+    def ping(self):
+        """Test connection - Arduino responds with PONG"""
+        command = "PING\n"
+        self._write_text(command)
 
     def stop(self):
         self.running = False

@@ -1,40 +1,10 @@
 /*
- * WS2812B LED Strip Controller for Piano Keys - TEXT PROTOCOL with RGB
- * Compatible with HowToPiano Python application
+ * IMPROVED WS2812B LED Strip Controller - FIXED Multiple OFF Commands
  * 
- * Hardware:
- * - Arduino (Uno/Nano/Mega)
- * - WS2812B LED Strip (DC 5V)
- * - Data pin: Digital Pin 6 (configurable)
- * 
- * Text Communication Protocol:
- * Commands from Python (newline terminated):
- * 
- * Basic Commands:
- * - "ON:note:brightness\n" - Turn on LED with default green (brightness 0-100)
- *   Example: "ON:60:100\n" -> Note 60 at full brightness (green)
- * 
- * - "LED:note,r,g,b\n" - Turn on LED with RGB color
- *   Example: "LED:60,255,0,0\n" -> Note 60 in red
- * 
- * - "OFF:note\n" - Turn off LED
- *   Example: "OFF:60\n" -> Turn off note 60
- * 
- * - "CLEAR\n" - Turn off all LEDs
- * 
- * - "FLUSH\n" - Force immediate LED update (after multiple OFF commands)
- * 
- * - "BRIGHTNESS:value\n" - Set global brightness (0-255)
- *   Example: "BRIGHTNESS:128\n" -> 50% brightness
- * 
- * - "TEST\n" - Run test animation
- * 
- * - "PING\n" - Check connection (responds "PONG")
- * 
- * Batch Command (for multiple LEDs at once):
- * - "BATCH:note1,r,g,b;note2,r,g,b;note3,r,g,b\n"
- *   Example: "BATCH:60,255,0,0;62,0,255,0;64,0,0,255\n"
- *   -> Note 60 red, Note 62 green, Note 64 blue (single update)
+ * Key Improvement: Batched OFF commands
+ * - Accumulates OFF commands and processes them together
+ * - Single FastLED.show() for multiple OFF commands
+ * - Prevents lost commands when multiple notes end simultaneously
  */
 
 #include <FastLED.h>
@@ -48,28 +18,25 @@
 
 CRGB leds[NUM_LEDS];
 
-// Pending OFF buffer - accumulate OFF commands until FLUSH
-#define MAX_PENDING_OFF 88  // All piano keys
+// Command batching for OFF commands
+#define MAX_PENDING_OFF 20
 int pendingOffNotes[MAX_PENDING_OFF];
 int pendingOffCount = 0;
-unsigned long lastOffTime = 0;  // Track when last OFF was received
-#define AUTO_FLUSH_MS 10    // Auto-flush after 10ms of no OFF commands
+unsigned long lastCommandTime = 0;
+#define BATCH_TIMEOUT_MS 5  // Process pending OFF after 5ms of no new commands
 
 void setup() {
-  // Initialize serial communication at 115200 baud for fast USB response
   Serial.begin(115200);
-  while (!Serial && millis() < 1000); // Wait for serial, max 1 second
+  while (!Serial && millis() < 1000);
   
-  // Initialize FastLED with optimizations
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.setBrightness(BRIGHTNESS);
-  FastLED.setMaxRefreshRate(120); // Maximum refresh rate for smooth updates
+  FastLED.setMaxRefreshRate(120);
   
-  // Clear all LEDs
   fill_solid(leds, NUM_LEDS, CRGB::Black);
   FastLED.show();
   
-  // Quick startup flash
+  // Startup flash
   for(int i = 0; i < 3; i++) {
     fill_solid(leds, NUM_LEDS, CRGB::White);
     FastLED.setBrightness(50);
@@ -81,45 +48,73 @@ void setup() {
   }
   
   FastLED.setBrightness(BRIGHTNESS);
-  
-  // Send ready signal
   Serial.println("READY");
   Serial.flush();
 }
 
 void loop() {
-  // Process text commands - instant update, no delays
+  // Check for pending OFF commands timeout
+  if (pendingOffCount > 0 && (millis() - lastCommandTime) >= BATCH_TIMEOUT_MS) {
+    processPendingOff();
+  }
+  
+  // Process incoming commands
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     command.trim();
     
     if (command.length() > 0) {
       processCommand(command);
+      lastCommandTime = millis();
+    }
+  }
+}
+
+void processPendingOff() {
+  // Turn off all pending LEDs in one batch
+  if (pendingOffCount == 0) return;
+  
+  for (int i = 0; i < pendingOffCount; i++) {
+    int midiNote = pendingOffNotes[i];
+    int ledIndex = midiNote - 21;
+    
+    if (ledIndex >= 0 && ledIndex < NUM_LEDS) {
+      leds[ledIndex] = CRGB::Black;
     }
   }
   
-  // Auto-flush if pending OFF and no new commands for 10ms
-  if (pendingOffCount > 0 && (millis() - lastOffTime) >= AUTO_FLUSH_MS) {
-    FastLED.show();
-    pendingOffCount = 0;
+  // Single show for all OFF commands
+  FastLED.show();
+  
+  // Clear pending list
+  pendingOffCount = 0;
+}
+
+void addPendingOff(int midiNote) {
+  // Add note to pending OFF list
+  if (pendingOffCount < MAX_PENDING_OFF) {
+    pendingOffNotes[pendingOffCount++] = midiNote;
+  }
+  
+  // If buffer is full, process immediately
+  if (pendingOffCount >= MAX_PENDING_OFF) {
+    processPendingOff();
   }
 }
 
 void processCommand(String cmd) {
   if (cmd.startsWith("ON:")) {
-    // Format: ON:note:brightness (default green)
-    cmd.remove(0, 3); // Remove "ON:"
+    // Process any pending OFF first
+    processPendingOff();
     
+    cmd.remove(0, 3);
     int colon = cmd.indexOf(':');
     if (colon > 0) {
       int midiNote = cmd.substring(0, colon).toInt();
       int brightness = cmd.substring(colon + 1).toInt();
-      
-      // Convert MIDI note to LED index (21-108 -> 0-87)
       int ledIndex = midiNote - 21;
       
       if (ledIndex >= 0 && ledIndex < NUM_LEDS) {
-        // Green with brightness scaling
         int g = map(brightness, 0, 100, 0, 255);
         leds[ledIndex] = CRGB(0, g, 0);
         FastLED.show();
@@ -127,9 +122,10 @@ void processCommand(String cmd) {
     }
   }
   else if (cmd.startsWith("LED:")) {
-    // Format: LED:note,r,g,b (RGB color)
-    cmd.remove(0, 4); // Remove "LED:"
+    // Process any pending OFF first
+    processPendingOff();
     
+    cmd.remove(0, 4);
     int c1 = cmd.indexOf(',');
     int c2 = cmd.indexOf(',', c1 + 1);
     int c3 = cmd.indexOf(',', c2 + 1);
@@ -139,33 +135,27 @@ void processCommand(String cmd) {
       int r = cmd.substring(c1 + 1, c2).toInt();
       int g = cmd.substring(c2 + 1, c3).toInt();
       int b = cmd.substring(c3 + 1).toInt();
-      
-      // Convert MIDI note to LED index
       int ledIndex = midiNote - 21;
       
       if (ledIndex >= 0 && ledIndex < NUM_LEDS) {
         leds[ledIndex] = CRGB(r, g, b);
-        // Show immediately (this also flushes any pending OFF)
         FastLED.show();
-        pendingOffCount = 0;  // Clear pending buffer after show
       }
     }
   }
   else if (cmd.startsWith("BATCH:")) {
-    // Format: BATCH:note1,r,g,b;note2,r,g,b;note3,r,g,b
-    // Update multiple LEDs in one command - ULTRA FAST
-    cmd.remove(0, 6); // Remove "BATCH:"
+    // Process any pending OFF first
+    processPendingOff();
     
+    cmd.remove(0, 6);
     int startIdx = 0;
     bool needsUpdate = false;
     
-    // Parse all notes first (no show() yet)
     while (startIdx < cmd.length()) {
       int semicolon = cmd.indexOf(';', startIdx);
       if (semicolon == -1) semicolon = cmd.length();
       
       String ledCmd = cmd.substring(startIdx, semicolon);
-      
       int c1 = ledCmd.indexOf(',');
       int c2 = ledCmd.indexOf(',', c1 + 1);
       int c3 = ledCmd.indexOf(',', c2 + 1);
@@ -175,8 +165,6 @@ void processCommand(String cmd) {
         int r = ledCmd.substring(c1 + 1, c2).toInt();
         int g = ledCmd.substring(c2 + 1, c3).toInt();
         int b = ledCmd.substring(c3 + 1).toInt();
-        
-        // Convert MIDI note to LED index
         int ledIndex = midiNote - 21;
         
         if (ledIndex >= 0 && ledIndex < NUM_LEDS) {
@@ -188,61 +176,43 @@ void processCommand(String cmd) {
       startIdx = semicolon + 1;
     }
     
-    // Single show() for all LEDs - MAXIMUM PERFORMANCE
     if (needsUpdate) {
       FastLED.show();
-      pendingOffCount = 0;  // Clear pending buffer after show
     }
   }
   else if (cmd.startsWith("OFF:")) {
-    // Format: OFF:note - BUFFER IT (don't show yet)
+    // Add to pending OFF instead of immediate processing
     int midiNote = cmd.substring(4).toInt();
-    int ledIndex = midiNote - 21;
-    
-    if (ledIndex >= 0 && ledIndex < NUM_LEDS) {
-      // Set LED to black in memory (but don't show yet)
-      leds[ledIndex] = CRGB::Black;
-      
-      // Add to pending buffer
-      if (pendingOffCount < MAX_PENDING_OFF) {
-        pendingOffNotes[pendingOffCount++] = ledIndex;
-      }
-      
-      // Update last OFF time for auto-flush
-      lastOffTime = millis();
-    }
+    addPendingOff(midiNote);
+    // Note: Will be processed in next loop iteration or after timeout
   }
   else if (cmd == "CLEAR") {
+    processPendingOff();  // Process any pending first
     fill_solid(leds, NUM_LEDS, CRGB::Black);
     FastLED.show();
-    pendingOffCount = 0; // Clear pending buffer
-  }
-  else if (cmd == "FLUSH") {
-    // Process all pending OFF commands with single show()
-    if (pendingOffCount > 0) {
-      FastLED.show();
-      pendingOffCount = 0; // Reset buffer
-    }
   }
   else if (cmd.startsWith("BRIGHTNESS:")) {
-    // Format: BRIGHTNESS:value (0-255)
+    processPendingOff();
     int brightness = cmd.substring(11).toInt();
     FastLED.setBrightness(constrain(brightness, 0, 255));
     FastLED.show();
   }
   else if (cmd == "TEST") {
+    processPendingOff();
     testAnimation();
   }
   else if (cmd == "PING") {
     Serial.println("PONG");
   }
+  else if (cmd == "FLUSH") {
+    // Force process pending OFF immediately
+    processPendingOff();
+  }
 }
 
 void testAnimation() {
-  // Test animation - RGB sweep
   Serial.println("Running test...");
   
-  // Red sweep
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB::Red;
     FastLED.show();
@@ -250,7 +220,6 @@ void testAnimation() {
     leds[i] = CRGB::Black;
   }
   
-  // Green sweep
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB::Green;
     FastLED.show();
@@ -258,7 +227,6 @@ void testAnimation() {
     leds[i] = CRGB::Black;
   }
   
-  // Blue sweep
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB::Blue;
     FastLED.show();

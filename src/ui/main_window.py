@@ -602,6 +602,13 @@ class MainWindow(QMainWindow):
         # Track which notes should be active (pressed by user or playing)
         self.expected_active_notes = set()  # Set of MIDI note numbers that should be lit
         
+        # LED Buffer for batch sending (improves Arduino communication speed)
+        # Format: list of ('ON', midi_note, r, g, b) or ('OFF', midi_note) tuples
+        self.led_buffer = []
+        self.led_buffer_timer = QTimer()
+        self.led_buffer_timer.timeout.connect(self._flush_led_buffer)
+        self.led_buffer_timer.start(20)  # Flush every 20ms (50Hz, fast enough for real-time)
+        
         # Keyboard cleanup timer - removes stuck keys every 100ms
         self.cleanup_timer = QTimer()
         self.cleanup_timer.timeout.connect(self._cleanup_orphaned_keys)
@@ -1577,11 +1584,19 @@ class MainWindow(QMainWindow):
         if hasattr(self.score_view, 'highlight_note_by_pitch'):
             # Highlight in green to indicate "play this"
             self.score_view.highlight_note_by_pitch(pitch, "green")
+        
+        # Also light up the LED (for Practice mode when showing which notes to play)
+        if self.arduino_connected and self.arduino_serial:
+            self.send_arduino_led_on(pitch, 100)
             
     def on_mode_staff_note_off(self, pitch):
         """Called when a training mode wants to unhighlight a note on the staff"""
         if hasattr(self.score_view, 'unhighlight_note_by_pitch'):
             self.score_view.unhighlight_note_by_pitch(pitch)
+        
+        # Turn off the LED
+        if self.arduino_connected and self.arduino_serial:
+            self.send_arduino_led_off(pitch)
 
     def on_arduino_note_on(self, note, velocity):
         """Called when Arduino detects a note press"""
@@ -1675,11 +1690,29 @@ class MainWindow(QMainWindow):
     
     def on_mode_note_highlight(self, pitch, color):
         """Training mode wants to highlight a piano key"""
-        self._activate_piano_key(pitch, 80, color, play_audio=False)
+        # Register as expected active note
+        self.expected_active_notes.add(pitch)
+        
+        # Visual feedback
+        if color is None:
+            color = self.get_played_note_color()
+        self.piano_widget.note_on(pitch, color)
+        
+        # Arduino LED - ALWAYS send for every note highlight
+        if self.arduino_connected and self.arduino_serial:
+            self.send_arduino_led_on(pitch, 80)
     
     def on_mode_note_unhighlight(self, pitch):
         """Training mode wants to unhighlight a piano key"""
-        self._deactivate_piano_key(pitch, stop_audio=False)
+        # Unregister from expected active notes
+        self.expected_active_notes.discard(pitch)
+        
+        # Visual feedback
+        self.piano_widget.note_off(pitch)
+        
+        # Arduino LED - ALWAYS turn off
+        if self.arduino_connected and self.arduino_serial:
+            self.send_arduino_led_off(pitch)
     
     def on_mode_play_audio(self, pitch, velocity):
         """Training mode wants to play audio"""
@@ -1727,6 +1760,15 @@ class MainWindow(QMainWindow):
         # Clear expected active notes
         self.expected_active_notes.clear()
         
+        # Send CLEAR command to Arduino to turn off all LEDs
+        if self.arduino_connected and self.arduino_serial:
+            try:
+                command = "CLEAR\n"
+                self.arduino_serial.write(command.encode('utf-8'))
+                self.arduino_serial.flush()
+            except Exception as e:
+                print(f"Error sending CLEAR to Arduino: {e}")
+        
         # Turn off all piano keys (88 keys from MIDI 21 to 108)
         for note in range(21, 109):
             self.piano_widget.note_off(note)
@@ -1754,6 +1796,83 @@ class MainWindow(QMainWindow):
         self.piano_widget.update()
         # self.score_view.update()
     
+    def _flush_led_buffer(self):
+        """Send buffered LED commands (ON and OFF) in batch (runs every 20ms)"""
+        if not self.led_buffer or not self.arduino_connected or not self.arduino_serial:
+            return
+        
+        try:
+            # Separate ON and OFF commands
+            on_commands = []  # List of (midi_note, r, g, b)
+            off_commands = []  # List of midi_note
+            
+            for cmd in self.led_buffer:
+                if cmd[0] == 'ON':
+                    _, midi_note, r, g, b = cmd
+                    on_commands.append((midi_note, r, g, b))
+                elif cmd[0] == 'OFF':
+                    _, midi_note = cmd
+                    off_commands.append(midi_note)
+            
+            # Send all OFF commands first (to clear old notes)
+            for midi_note in off_commands:
+                actual_midi_note = midi_note
+                if self.settings.get("led_index_reverse", False):
+                    actual_midi_note = 129 - midi_note
+                
+                command = f"OFF:{actual_midi_note}\n"
+                self.arduino_serial.write(command.encode('utf-8'))
+            
+            # Send FLUSH command to force Arduino to process pending OFF immediately
+            if off_commands:
+                self.arduino_serial.write(b"FLUSH\n")
+            
+            # Then send ON commands (batch if multiple, single if one)
+            if len(on_commands) > 1:
+                # Build BATCH command: "BATCH:note1,r,g,b;note2,r,g,b\n"
+                parts = []
+                for midi_note, r, g, b in on_commands:
+                    actual_midi_note = midi_note
+                    if self.settings.get("led_index_reverse", False):
+                        actual_midi_note = 129 - midi_note
+                    parts.append(f"{actual_midi_note},{r},{g},{b}")
+                
+                command = "BATCH:" + ";".join(parts) + "\n"
+                self.arduino_serial.write(command.encode('utf-8'))
+                
+                # Log to console if open
+                if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
+                    self.arduino_console_dialog.log_sent_binary(f"⚡ BATCH: {len(on_commands)} ON + {len(off_commands)} OFF")
+            
+            elif len(on_commands) == 1:
+                # Single LED ON
+                midi_note, r, g, b = on_commands[0]
+                actual_midi_note = midi_note
+                if self.settings.get("led_index_reverse", False):
+                    actual_midi_note = 129 - midi_note
+                
+                command = f"LED:{actual_midi_note},{r},{g},{b}\n"
+                self.arduino_serial.write(command.encode('utf-8'))
+                
+                # Log to console if open
+                if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
+                    led_index = midi_note - 21
+                    self.arduino_console_dialog.log_sent_binary(f"⚡ ON: Note {midi_note} → LED {led_index} RGB({r},{g},{b}) + {len(off_commands)} OFF")
+            else:
+                # Only OFF commands
+                if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
+                    self.arduino_console_dialog.log_sent_binary(f"⚡ OFF: {len(off_commands)} LEDs")
+            
+            # Single flush at the end for all commands
+            self.arduino_serial.flush()
+            
+            # Clear buffer
+            self.led_buffer.clear()
+            
+        except Exception as e:
+            print(f"Error flushing LED buffer: {e}")
+            self.led_buffer.clear()
+    
     def _cleanup_orphaned_keys(self):
         """Remove stuck keys that shouldn't be active (runs every 100ms)"""
         # Get currently active notes from piano widget
@@ -1770,6 +1889,9 @@ class MainWindow(QMainWindow):
             for note in orphaned_notes:
                 self.piano_widget.note_off(note)
                 self.score_view.note_off(note)
+                
+                # Turn off Arduino LED
+                self.send_arduino_led_off(note)
                 
                 # Stop audio
                 try:
@@ -1860,23 +1982,23 @@ class MainWindow(QMainWindow):
         print("  ❌ No Arduino detected")
     
     def try_connect_arduino(self, port):
-        """Try to connect to Arduino on specified port - BINARY PROTOCOL"""
+        """Try to connect to Arduino on specified port - TEXT PROTOCOL"""
         try:
             print(f"    Opening {port}...")
-            ser = serial.Serial(port, 500000, timeout=0.5)
+            ser = serial.Serial(port, 115200, timeout=0.5)
             print(f"    Waiting for Arduino ready signal (2 seconds)...")
             time.sleep(2)  # Wait for Arduino reset and startup flash
             
-            # Look for ready byte (0xFF = 255)
+            # Look for READY message (text protocol)
             ready = False
             start_time = time.time()
             
             while time.time() - start_time < 3:  # 3 second timeout
                 if ser.in_waiting > 0:
-                    byte = ser.read(1)
-                    if byte == b'\xFF':
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if line == "READY":
                         ready = True
-                        print(f"    ✅ Arduino READY (binary protocol) on {port}!")
+                        print(f"    ✅ Arduino READY (text protocol) on {port}!")
                         break
                 time.sleep(0.1)
             
@@ -1885,17 +2007,19 @@ class MainWindow(QMainWindow):
                 self.arduino_connected = True
                 self.update_arduino_indicator()
                 
-                # Test with a LED command - turn on LED 0 briefly
+                # Test with a LED command - turn on LED for note 21 (A0) briefly
                 print(f"    Testing LED command...")
-                test_packet = bytes([0, 1, 0, 255, 0])  # LED 0, ON, Green
-                ser.write(test_packet)
+                test_cmd = "LED:21,0,255,0\n"  # Note 21, Green
+                ser.write(test_cmd.encode('utf-8'))
+                ser.flush()
                 time.sleep(0.1)
                 
                 # Turn it off
-                off_packet = bytes([0, 0, 0, 0, 0])
-                ser.write(off_packet)
+                off_cmd = "OFF:21\n"
+                ser.write(off_cmd.encode('utf-8'))
+                ser.flush()
                 
-                print(f"    ✅ Binary protocol working!")
+                print(f"    ✅ Text protocol working!")
                 return True
             else:
                 print(f"    ⚠️  No ready signal received, but connecting anyway...")
@@ -1905,11 +2029,13 @@ class MainWindow(QMainWindow):
                 self.update_arduino_indicator()
                 
                 # Test with LED command
-                test_packet = bytes([0, 1, 255, 0, 0])  # LED 0, Red
-                ser.write(test_packet)
+                test_cmd = "LED:21,255,0,0\n"  # Note 21, Red
+                ser.write(test_cmd.encode('utf-8'))
+                ser.flush()
                 time.sleep(0.2)
-                off_packet = bytes([0, 0, 0, 0, 0])
-                ser.write(off_packet)
+                off_cmd = "OFF:21\n"
+                ser.write(off_cmd.encode('utf-8'))
+                ser.flush()
                 
                 print(f"    ✅ Connected on {port} (no handshake)")
                 return True
@@ -1962,44 +2088,92 @@ class MainWindow(QMainWindow):
             self.btn_arduino.setToolTip("Arduino: Disconnected")
     
     def send_arduino_led_on(self, midi_note, velocity=100):
-        """Send LED ON command to Arduino - BINARY, IMMEDIATE FLUSH"""
+        """Send LED ON command to Arduino - TEXT PROTOCOL with RGB gradient"""
         if not self.arduino_connected or not self.arduino_serial:
             return
         
         try:
-            # Binary protocol: [note_index][state][R][G][B]
-            led_index = midi_note - 21  # Convert MIDI to LED index (0-87)
-            if 0 <= led_index < 88:
-                # Green color with velocity-based brightness
-                brightness = int((velocity / 127) * 255)
-                r, g, b = 0, brightness, 0
-                packet = bytes([led_index, 1, r, g, b])
+            # Text protocol: "LED:note,r,g,b\n"
+            if 21 <= midi_note <= 108:
+                # Check if LED index should be reversed (hardware orientation)
+                actual_midi_note = midi_note
+                if self.settings.get("led_index_reverse", False):
+                    # Invert: A0 (21) <-> C8 (108)
+                    actual_midi_note = 129 - midi_note  # 21+108=129
+                # Check if we're in Play or Master mode
+                current_mode = self.training_manager.current_mode
+                mode_name = current_mode.get_mode_name() if current_mode else ""
                 
-                self.arduino_serial.write(packet)
-                self.arduino_serial.flush()  # Force immediate send
+                if mode_name in ["Play", "Master"]:
+                    # RGB GRADIENT MODE (only for Play and Master)
+                    # Calculate position in keyboard: 0.0 (bass/A0) to 1.0 (treble/C8)
+                    position = (midi_note - 21) / 87.0  # 88 keys: notes 21-108
+                    
+                    # Check if gradient should be reversed
+                    reverse_gradient = self.settings.get("led_gradient_reverse", False)
+                    if reverse_gradient:
+                        position = 1.0 - position  # Invert: treble dark, bass bright
+                    
+                    # Full RGB gradient from dark (bass) to bright (treble)
+                    # Dark blue/purple (bass) -> cyan -> green -> yellow -> red (treble)
+                    if position < 0.2:  # Dark blue to cyan
+                        ratio = position / 0.2
+                        r = int(0 + (0 * ratio))
+                        g = int(0 + (128 * ratio))
+                        b = int(64 + (191 * ratio))
+                    elif position < 0.4:  # Cyan to green
+                        ratio = (position - 0.2) / 0.2
+                        r = int(0 + (0 * ratio))
+                        g = int(128 + (127 * ratio))
+                        b = int(255 - (255 * ratio))
+                    elif position < 0.6:  # Green to yellow
+                        ratio = (position - 0.4) / 0.2
+                        r = int(0 + (255 * ratio))
+                        g = int(255)
+                        b = int(0)
+                    elif position < 0.8:  # Yellow to orange
+                        ratio = (position - 0.6) / 0.2
+                        r = int(255)
+                        g = int(255 - (128 * ratio))
+                        b = int(0)
+                    else:  # Orange to red
+                        ratio = (position - 0.8) / 0.2
+                        r = int(255)
+                        g = int(127 - (127 * ratio))
+                        b = int(0)
+                    
+                    # Apply velocity as overall brightness multiplier
+                    brightness_factor = velocity / 127.0
+                    r = int(r * brightness_factor)
+                    g = int(g * brightness_factor)
+                    b = int(b * brightness_factor)
+                    
+                else:
+                    # OTHER MODES (Practice, Student, Corrector): Green with velocity
+                    brightness = int((velocity / 127) * 255)
+                    r, g, b = 0, brightness, 0
                 
-                # Log to console if open (no waiting for response)
-                if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
-                    self.arduino_console_dialog.log_sent_binary(f"ON: Note {midi_note} → LED {led_index} RGB({r},{g},{b})")
+                # Add to buffer instead of sending immediately (faster!)
+                self.led_buffer.append(('ON', midi_note, r, g, b))
+                # Buffer will be flushed automatically every 20ms by timer
         
         except Exception as e:
             print(f"Error sending LED ON: {e}")
     
     def send_arduino_led_off(self, midi_note):
-        """Send LED OFF command to Arduino - BINARY, IMMEDIATE FLUSH"""
+        """Send LED OFF command to Arduino - TEXT PROTOCOL (buffered)"""
         if not self.arduino_connected or not self.arduino_serial:
             return
         
         try:
-            led_index = midi_note - 21
-            if 0 <= led_index < 88:
-                packet = bytes([led_index, 0, 0, 0, 0])
-                self.arduino_serial.write(packet)
-                self.arduino_serial.flush()  # Force immediate send - CRITICAL for OFF
+            if 21 <= midi_note <= 108:
+                # Add to buffer - will be sent in next flush (20ms)
+                self.led_buffer.append(('OFF', midi_note))
                 
                 # Log to console if open
                 if self.arduino_console_dialog and self.arduino_console_dialog.isVisible():
-                    self.arduino_console_dialog.log_sent_binary(f"OFF: Note {midi_note} → LED {led_index}")
+                    led_index = midi_note - 21
+                    self.arduino_console_dialog.log_sent_binary(f"⚡ OFF (buffered): Note {midi_note} → LED {led_index}")
         
         except Exception as e:
             print(f"Error sending LED OFF: {e}")
@@ -2251,7 +2425,7 @@ class ArduinoConsoleDialog(QDialog):
             return
         
         self.console.append("")
-        self.console.append("<span style='color: #f0883e; font-weight: bold;'>🎵 Testing C Major Scale (Binary)...</span>")
+        self.console.append("<span style='color: #f0883e; font-weight: bold;'>🎵 Testing C Major Scale (Text Protocol)...</span>")
         
         # C major scale: C4-C5 (60-72)
         notes = [60, 62, 64, 65, 67, 69, 71, 72]
@@ -2259,17 +2433,19 @@ class ArduinoConsoleDialog(QDialog):
         
         try:
             for note, name in zip(notes, note_names):
-                # ON - Binary packet
+                # ON - Text command
                 led_index = note - 21
-                packet_on = bytes([led_index, 1, 0, 255, 0])  # Green
-                self.serial_port.write(packet_on)
+                cmd_on = f"LED:{note},0,255,0\n"  # Green
+                self.serial_port.write(cmd_on.encode('utf-8'))
+                self.serial_port.flush()
                 self.log_sent_binary(f"ON: {name} (MIDI {note}) → LED {led_index} Green")
                 
                 time.sleep(0.3)
                 
-                # OFF - Binary packet
-                packet_off = bytes([led_index, 0, 0, 0, 0])
-                self.serial_port.write(packet_off)
+                # OFF - Text command
+                cmd_off = f"OFF:{note}\n"
+                self.serial_port.write(cmd_off.encode('utf-8'))
+                self.serial_port.flush()
                 self.log_sent_binary(f"OFF: {name}")
                 
                 time.sleep(0.05)

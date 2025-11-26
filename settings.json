@@ -25,13 +25,15 @@
     0
   ],
   "visual_zoom": 100,
-  "playback_tempo": 100,
+  "playback_tempo": 104,
   "playback_speed": 100,
   "show_staff_note_colors": false,
   "ledteacher_enabled": true,
   "leds_per_key": 1,
   "led_brightness": 0,
   "led_color_mode": "Rainbow",
+  "led_gradient_reverse": true,
+  "led_index_reverse": true,
   "ledteacher_port": "COM19",
   "ledteacher_baud": 115200,
   "view_mode": "wrapped"

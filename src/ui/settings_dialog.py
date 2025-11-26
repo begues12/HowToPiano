@@ -393,6 +393,18 @@ class SettingsDialog(QDialog):
             self.led_color_mode.setCurrentIndex(0)
         led_layout.addRow("Color Mode:", self.led_color_mode)
         
+        # Gradient reverse option (for Play and Master modes)
+        self.led_gradient_reverse = QCheckBox("Reverse gradient (dark to bright)")
+        self.led_gradient_reverse.setChecked(settings.get("led_gradient_reverse", False) if settings else False)
+        self.led_gradient_reverse.setToolTip("In Play/Master modes: reverse RGB gradient from bass (dark) to treble (bright)")
+        led_layout.addRow("", self.led_gradient_reverse)
+        
+        # LED index reverse option (for hardware orientation)
+        self.led_index_reverse = QCheckBox("Reverse LED index (strip on right side)")
+        self.led_index_reverse.setChecked(settings.get("led_index_reverse", False) if settings else False)
+        self.led_index_reverse.setToolTip("Check if LED strip starts from right side of keyboard instead of left")
+        led_layout.addRow("", self.led_index_reverse)
+        
         led_group.setLayout(led_layout)
         layout.addRow(led_group)
         
@@ -966,6 +978,8 @@ class SettingsDialog(QDialog):
             "leds_per_key": self.leds_per_key.value(),
             "led_brightness": self.led_brightness.value(),
             "led_color_mode": self.led_color_mode.currentText(),
+            "led_gradient_reverse": self.led_gradient_reverse.isChecked(),
+            "led_index_reverse": self.led_index_reverse.isChecked(),
             "ledteacher_port": self._get_actual_ledteacher_port(),  # Save actual COM port, not display text
             "ledteacher_baud": int(self.ledteacher_baud.currentText())
         }

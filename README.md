@@ -131,11 +131,39 @@ The application uses a fast, efficient serial protocol at **115200 baud** for re
 - LED index: `led_index = midi_note - 21` (0-87)
 - Example: Middle C (MIDI 60) → LED index 39
 
+### RGB Gradient Mode (Play & Master)
+
+In **Play** and **Master** modes, LEDs display a beautiful full-spectrum RGB gradient:
+- **Bass (low notes)**: Dark blue/purple tones
+- **Middle range**: Cyan → Green → Yellow progression
+- **Treble (high notes)**: Orange → Red bright tones
+- **Velocity sensitivity**: Brightness adjusts with note velocity
+- **Reversible gradient**: Settings option to reverse direction (treble dark, bass bright)
+
+Other training modes (Practice, Student, Corrector) use traditional green LED colors for clarity.
+
+**Configuration Options** (Settings → LedTeacher):
+- ✅ **"Reverse gradient"**: Inverts color direction (treble dark, bass bright)
+- ✅ **"Reverse LED index"**: Check if LED strip starts from right side of keyboard
+  - Useful when Arduino/LED strip is positioned on the right side
+  - Automatically maps MIDI notes to correct LED positions
+
+### Automatic LED Cleanup
+
+The application includes intelligent LED management to prevent stuck LEDs:
+- **Orphaned key detection**: Runs every 100ms to find LEDs that shouldn't be lit
+- **Auto-cleanup on stop**: Sends `CLEAR` command when stopping playback
+- **Manual cleanup on pause**: All LEDs turn off when pausing
+- **Thread-safe operations**: Prevents race conditions with mutex locks
+
+This ensures LEDs always match the current playback state without manual intervention.
+
 ### Performance Optimizations
 - **Batch commands** for updating multiple LEDs simultaneously
 - **FastLED library** with 120 Hz refresh rate
 - **No delays** in Arduino loop - instant USB response
 - **Buffer optimization** for smooth animations
+- **RGB gradient calculation** optimized for real-time performance
 
 ### Hardware Requirements
 - Arduino Uno/Nano/Mega

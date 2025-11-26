@@ -119,8 +119,7 @@ class StaffWidget(QWidget):
         
         # NEW: SongWidget for advanced note management
         self.song_widget = SongWidget(tempo=self.tempo_bpm, time_signature=self.time_signature)
-        self.song_widget.note_triggered.connect(self._on_note_triggered)
-        self.song_widget.note_ended.connect(self._on_note_ended)
+        # Note: SongWidget is a simple container, not QObject - no signals to connect
         
     def export_midi_notes_to_txt(self, midi_path, output_path):
         """Export all notes from MIDI to TXT file with T and pitch"""
@@ -701,10 +700,6 @@ class StaffWidget(QWidget):
         
         self.note_triggered.emit(pitch, velocity)
     
-    def _on_note_ended(self, pitch):
-        """Callback when a note should stop playing (from SongWidget)"""
-        self.note_ended.emit(pitch)
-    
     def _check_and_trigger_notes(self, current_time):
         """
         TIME-BASED NOTE TRIGGER SYSTEM
@@ -764,9 +759,10 @@ class StaffWidget(QWidget):
                         pass
             
             # === NOTE OFF LOGIC ===
-            # End note when duration expires (also pre-trigger by latency)
-            # Changed from elif to if to allow both ON and OFF in same iteration
-            if (trigger_time >= note_end_time and
+            # End note when duration expires
+            # Use current_time (not trigger_time) to avoid early note-off
+            # trigger_time is only for note_on to compensate audio latency
+            if (current_time >= note_end_time and
                 note_id in self.triggered_notes):
                 
                 # Stop sound
